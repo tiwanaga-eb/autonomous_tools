@@ -1,0 +1,36 @@
+# Komatsu HM400-5 (image-based initial config for planner)
+# Units: SI (m, rad, s)
+
+wheel_base: 4.35
+overall_length: 11.105
+overall_width: 3.45
+overall_height: 3.735
+
+# Top-view figure includes R8885 annotation; use as initial minimum turning radius.
+min_turning_radius: 8.885
+max_steer_angle: 0.70
+kappa_max_fwd: 0.1125
+kappa_max_rev: 0.105
+
+# 60 km/h shown in spec table (approx).
+max_speed_fwd: 16.7
+max_speed_rev: 6.0
+
+gear_switch_time_penalty: 3.0
+reverse_penalty_factor: 1.2
+
+# Collision model (circle + road-width envelope)
+road_width: 5.2
+footprint_radius: 5.9
+footprint_polygon:
+  - [5.5525, 1.725]
+  - [5.5525, -1.725]
+  - [-5.5525, -1.725]
+  - [-5.5525, 1.725]
+
+# Phase1 / Phase2 dynamics defaults
+max_steer_rate: 0.6
+steer_ramp_length: 2.5
+kappa_rate_max: 0.12
+smoothing_step: 0.3
+enable_smoothing: true

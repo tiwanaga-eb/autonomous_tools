@@ -1,0 +1,24 @@
+wheel_base: 4.95
+overall_length: 10.29
+overall_width: 5.53
+overall_height: 5.05
+min_turning_radius: 10.1
+max_steer_angle: 0.72
+kappa_max_fwd: 0.099
+kappa_max_rev: 0.090
+max_speed_fwd: 18.0
+max_speed_rev: 6.0
+gear_switch_time_penalty: 3.0
+reverse_penalty_factor: 1.2
+footprint_radius: 3.6
+max_steer_rate: 0.02
+steer_ramp_length: 0.5
+road_width: 8.0
+kappa_rate_max: 0.03
+smoothing_step: 0.3
+enable_smoothing: true
+footprint_polygon:
+  - [5.145, 2.765]
+  - [5.145, -2.765]
+  - [-5.145, -2.765]
+  - [-5.145, 2.765]

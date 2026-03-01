@@ -1,0 +1,143 @@
+:root {
+  --bg: #f6f6f6;
+  --panel: #ffffff;
+  --ink: #151515;
+  --muted: #666;
+  --accent: #1f6feb;
+  --danger: #b91c1c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+}
+
+#app {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  height: 100vh;
+}
+
+.panel {
+  background: var(--panel);
+  border-right: 1px solid #ddd;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+.panel h1 {
+  margin: 0 0 10px;
+  font-size: 20px;
+}
+
+label, fieldset {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+input, select, button {
+  width: 100%;
+  margin-top: 4px;
+}
+
+input, select {
+  padding: 6px;
+}
+
+button {
+  padding: 8px;
+  border: 1px solid #bbb;
+  background: #fafafa;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #efefef;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.modes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.modes button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.canvasWrap {
+  position: relative;
+  overflow: hidden;
+}
+
+#mapCanvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #fff;
+}
+
+#metricsBox {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid #ddd;
+  padding: 8px;
+  font-size: 12px;
+  min-width: 220px;
+}
+
+#banner {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  background: var(--danger);
+  color: #fff;
+  padding: 8px 10px;
+  font-weight: 600;
+}
+
+.hidden {
+  display: none;
+}
+
+#statusBox {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+@media (max-width: 1000px) {
+  #app {
+    grid-template-columns: 1fr;
+    grid-template-rows: 360px 1fr;
+  }
+
+  .panel {
+    border-right: 0;
+    border-bottom: 1px solid #ddd;
+  }
+}

@@ -1,0 +1,19 @@
+wheel_base: 2.5
+max_steer_angle: 0.6
+kappa_max_fwd: 0.27
+kappa_max_rev: 0.24
+max_speed_fwd: 5.0
+max_speed_rev: 3.0
+gear_switch_time_penalty: 1.0
+max_steer_rate: 1.5
+steer_ramp_length: 1.0
+road_width: 8.0
+kappa_rate_max: 0.2
+smoothing_step: 0.2
+enable_smoothing: true
+footprint_radius: 0.2
+footprint_polygon:
+  - [0.2, 0.2]
+  - [0.2, -0.2]
+  - [-0.2, -0.2]
+  - [-0.2, 0.2]
