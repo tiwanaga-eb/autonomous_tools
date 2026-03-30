@@ -1,0 +1,8 @@
+laspy[lazrs]
+open3d
+numpy
+scipy
+rasterio
+pyproj
+Pillow
+pyyaml

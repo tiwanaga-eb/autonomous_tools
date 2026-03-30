@@ -1,0 +1,25 @@
+{
+  "total_cells": 1447992,
+  "passable": {
+    "cells": 28104,
+    "area_m2": 1756.5,
+    "ratio": 0.019409
+  },
+  "risk": {
+    "cells": 14635,
+    "area_m2": 914.688,
+    "ratio": 0.010107
+  },
+  "impassable": {
+    "cells": 745925,
+    "area_m2": 46620.312,
+    "ratio": 0.515144
+  },
+  "nodata": {
+    "cells": 659328,
+    "area_m2": 41208.0,
+    "ratio": 0.45534
+  },
+  "input_file": "/Users/tosuke_iwanaga/Documents/lasfiles/Atos_0205_wgs84_group1_densified_point_cloud.las",
+  "processing_time_s": 165.349
+}

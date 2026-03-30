@@ -1,0 +1,51 @@
+input:
+  source_epsg: 32654
+  target_epsg: 6677
+
+grid:
+  resolution_m: 0.25
+
+ground_filter:
+  mode: "local_dtm"
+  local_buffer_m: 3.0
+  fallback_global_percentile: 1.0
+  fallback_global_buffer_m: 100.0
+
+features:
+  rough_window_m: 1.0
+  norm_percentile: 99.0
+
+thresholds:
+  # ベンチ面判定（新規追加）
+  slope_bench_deg:         15.0  # これ以下をベンチ面候補とする
+
+  # ベンチ面内での走行可否判定（緩和）
+  slope_passable_deg:      10.0
+  slope_risk_deg:          15.0  # 25 → 15（ベンチ内での急傾斜）
+
+  # 起伏（採石場の岩を考慮して緩和）
+  roughness_passable_m:    0.20  # 0.10 → 0.20
+  roughness_risk_m:        0.60  # 0.40 → 0.60
+
+  # 段差（ベンチ縁の検出用に維持）
+  height_range_passable_m: 0.30  # 0.20 → 0.30
+  height_range_risk_m:     0.80  # 0.50 → 0.80
+
+  # 密度（緩和）
+  density_min_points:      1     # 3 → 1
+
+  # 水判定（維持）
+  water_hue_min:           180
+  water_hue_max:           240
+  water_score_thresh:      0.8
+  mud_score_thresh:        0.6
+
+output:
+  colors:
+    passable:   [0,   200, 0]
+    risk:       [255, 200, 0]
+    impassable: [200, 0,   0]
+    nodata:     [80,  80,  80]
+  cost_color_threshold: 60
+  w_slope: 500.0
+  w_rough: 100.0
