@@ -1,0 +1,70 @@
+"""車種ごとパラメータチューニング（オーバーライド）のテスト。"""
+from fastapi.testclient import TestClient
+
+from app.main import app
+
+client = TestClient(app)
+
+
+def _reset(vid):
+    client.delete(f"/api/vehicles/{vid}/override")
+
+
+def test_detail_shape():
+    d = client.get("/api/vehicles/HD785/detail").json()
+    assert set(d.keys()) == {"effective", "default", "override", "editable_fields"}
+    assert "min_turning_radius" in d["editable_fields"]
+    assert d["override"] == {}
+
+
+def test_put_get_reset_and_overridden_flag():
+    try:
+        r = client.put("/api/vehicles/HD785", json={"fields": {"min_turning_radius": 14.0, "overall_width": 6.0}})
+        assert r.status_code == 200, r.text
+        eff = r.json()["effective"]
+        assert eff["min_turning_radius"] == 14.0 and eff["overall_width"] == 6.0
+        # 寸法変更で footprint_polygon が再計算される（半幅3.0）
+        assert abs(abs(eff["footprint_polygon"][0][1]) - 3.0) < 1e-6
+        # 一覧に overridden フラグ
+        lst = {v["id"]: v for v in client.get("/api/vehicles").json()}
+        assert lst["HD785"]["overridden"] is True and lst["HD605"]["overridden"] is False
+        # 単体GETも resolve 済み
+        assert client.get("/api/vehicles/HD785").json()["min_turning_radius"] == 14.0
+    finally:
+        _reset("HD785")
+    # reset 後は既定へ
+    assert client.get("/api/vehicles/HD785").json()["min_turning_radius"] == 10.1
+    assert client.get("/api/vehicles").json()[0]["overridden"] is False
+
+
+def test_put_partial_merge():
+    try:
+        client.put("/api/vehicles/HD605", json={"fields": {"min_turning_radius": 11.0}})
+        client.put("/api/vehicles/HD605", json={"fields": {"road_width": 6.0}})
+        d = client.get("/api/vehicles/HD605/detail").json()
+        assert d["override"]["min_turning_radius"] == 11.0 and d["override"]["road_width"] == 6.0
+    finally:
+        _reset("HD605")
+
+
+def test_invalid_override_returns_400():
+    # tracked_skid に wheel_base は付けられない（運動学と矛盾）
+    r = client.put("/api/vehicles/CD110R", json={"fields": {"wheel_base": 3.0}})
+    assert r.status_code == 400
+    _reset("CD110R")
+
+
+def test_override_propagates_to_planning():
+    """min_turning_radius を上げると dubins 経路の実測最小半径も増える（resolver 反映）。"""
+    body = {
+        "waypoints": [{"x": 0, "y": 0, "heading_deg": 90}, {"x": 12, "y": 0, "heading_deg": 270}],
+        "algorithm": "dubins", "vehicle_id": "HD785", "spacing_m": 1.0,
+    }
+    r_def = client.post("/api/plan", json=body).json()["measured_min_radius_m"]
+    try:
+        client.put("/api/vehicles/HD785", json={"fields": {"min_turning_radius": 25.0}})
+        r_ovr = client.post("/api/plan", json=body).json()["measured_min_radius_m"]
+    finally:
+        _reset("HD785")
+    assert r_def is not None and r_ovr is not None
+    assert r_ovr > r_def + 3.0  # 半径上限を上げた分、経路の旋回半径が大きくなる

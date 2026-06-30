@@ -85,9 +85,9 @@ def cost_to_rgb(cost_u8: np.ndarray,
 # User params
 # ============================================================
 # las_path = "merged_epsg6677.las"  # EPSG6677
-las_path = "yoshimitsu.las"  # EPSG6677
+las_path = "Dataset_20260529_0920.las"  # EPSG6677
 # las_path = "pointcloud_0515_M4E_8060_100_EdgeRTK.las"  # EPSG4979 (とコメントあり)
-out_tif  = "cost_map_yoshimitsu.tif"
+out_tif  = "cost_map_ATOS.tif"
 
 grid_size = 0.1
 

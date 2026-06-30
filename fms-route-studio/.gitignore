@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node / web
+node_modules/
+apps/web/dist/
+*.log
+
+# Data / outputs (大容量ラスタ・点群はコミットしない)
+*.las
+*.laz
+*.tif
+*.tiff
+*.cog.tif
+data/
+out/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

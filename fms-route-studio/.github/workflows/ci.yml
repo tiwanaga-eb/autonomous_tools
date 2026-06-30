@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  python:
+    name: planning_core + api (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install planning_core
+        run: pip install -e "packages/planning_core[dev]"
+      - name: Install api
+        run: pip install -e "services/api[dev]"
+      - name: Lint planning_core
+        run: ruff check packages/planning_core || true
+      - name: Test planning_core
+        run: pytest -q packages/planning_core/tests
+      - name: Test api
+        run: pytest -q services/api/tests
