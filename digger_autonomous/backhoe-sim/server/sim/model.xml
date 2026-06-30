@@ -1,0 +1,84 @@
+<!--
+  Backhoe (Komatsu PC200-11, 2.9 m arm) kinematic chain.  Geometry MUST stay in sync with
+  server/config.py:GEOM (tests/test_kinematics.py asserts this).
+
+  Joints are NOT driven by MuJoCo actuators; hydraulics.py injects torque into
+  data.qfrc_applied[joint_dof].  Soil/dig forces are also injected analytically.
+  The ground is a plain collision plane; the soil height-field lives in soil.py.
+
+  Sign conventions (sagittal plane, x forward, z up):
+    swing  : hinge about +z
+    boom   : hinge about +y  (+angle pitches the link tip downward, R_y)
+    arm    : hinge about +y
+    bucket : hinge about +y
+  Forward kinematics in machine.py replicates this exact frame composition.
+-->
+<mujoco model="backhoe">
+  <compiler angle="radian" autolimits="true"/>
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast" cone="elliptic"/>
+
+  <default>
+    <joint damping="500" armature="5" limited="true"/>
+    <!-- Machine geoms do NOT collide (contype/conaffinity 0): soil & ground
+         interaction is computed analytically in soil.py and injected as force,
+         and self-collision is handled by the CBF safety layer.  This avoids
+         spurious MuJoCo contacts (buried links, self-overlap) destabilising the
+         sim.  The ground plane below re-enables collision only for itself. -->
+    <geom rgba="0.85 0.65 0.13 1" contype="0" conaffinity="0"/>
+  </default>
+
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.25 0.28 0.32" rgb2="0.32 0.36 0.40"
+             width="512" height="512"/>
+    <material name="grid" texture="grid" texrepeat="40 40" reflectance="0.05"/>
+    <material name="steel" rgba="0.80 0.62 0.12 1"/>
+    <material name="dark" rgba="0.20 0.22 0.25 1"/>
+  </asset>
+
+  <worldbody>
+    <light name="sun" pos="0 0 20" dir="0 0 -1" diffuse="0.8 0.8 0.8" directional="true"/>
+    <geom name="ground" type="plane" size="40 40 0.1" material="grid" friction="1 0.05 0.001"/>
+
+    <!-- lower travel body (welded to world; travel handled kinematically) -->
+    <!-- PC200-11: クローラ全長 4070mm / 全幅 2805mm / 旋回ベアリング ~1.0m -->
+    <body name="base" pos="0 0 0">
+      <geom name="base_geom" type="box" pos="0 0 0.50" size="2.035 1.40 0.50" material="dark"/>
+      <inertial pos="0 0 0.50" mass="9000" diaginertia="6000 9000 11000"/>
+
+      <!-- swing / upper structure (後端旋回半径 2830mm に合わせ後方へ寄せる) -->
+      <body name="swing" pos="0 0 1.0">
+        <joint name="swing" type="hinge" axis="0 0 1" range="-3.14159 3.14159"/>
+        <geom name="cab_geom" type="box" pos="-1.23 0 1.0" size="1.6 1.40 0.95" material="steel"/>
+        <inertial pos="-1.0 0 1.0" mass="7400" diaginertia="6000 6000 8000"/>
+
+        <!-- boom -->
+        <body name="boom" pos="0.55 0 1.45">
+          <joint name="boom" type="hinge" axis="0 1 0" range="-0.698132 0.942478"/>
+          <geom name="boom_geom" type="capsule" fromto="0 0 0  5.70 0 0" size="0.24" material="steel"/>
+          <inertial pos="2.85 0 0" mass="1700" diaginertia="60 5200 5200"/>
+
+          <!-- arm / stick (2.9 m アーム) -->
+          <body name="arm" pos="5.70 0 0">
+            <joint name="arm" type="hinge" axis="0 1 0" range="-0.349066 2.792527"/>
+            <geom name="arm_geom" type="capsule" fromto="0 0 0  2.90 0 0" size="0.18" material="steel"/>
+            <inertial pos="1.45 0 0" mass="1000" diaginertia="30 760 760"/>
+
+            <!-- bucket (標準容量 0.80 m³) -->
+            <body name="bucket" pos="2.90 0 0">
+              <joint name="bucket" type="hinge" axis="0 1 0" range="-0.436332 3.054326"/>
+              <!-- bucket shell: back plate + cutting edge + side plates -->
+              <geom name="bucket_back" type="box" pos="0.60 0 -0.13" size="0.65 0.52 0.10"
+                    euler="0 0.5 0" material="steel"/>
+              <geom name="bucket_edge" type="box" pos="1.45 0 -0.35" size="0.12 0.52 0.06"
+                    material="dark"/>
+              <inertial pos="0.8 0 -0.25" mass="700" diaginertia="120 120 120"/>
+              <!-- cutting edge reference point -->
+              <site name="bucket_tip" pos="1.50 0 -0.35" size="0.05" rgba="1 0.2 0.2 1"/>
+              <site name="bucket_back_site" pos="0.60 0 0.0" size="0.05" rgba="0.2 0.6 1 1"/>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

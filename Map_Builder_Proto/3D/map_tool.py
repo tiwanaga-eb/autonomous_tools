@@ -9,7 +9,6 @@ import numpy as np
 import io
 import pyproj
 from scipy.interpolate import splprep, splev
-from scipy.ndimage import distance_transform_edt
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal, Any, Dict
 from pathlib import Path
@@ -25,6 +24,110 @@ ORTHO_RASTER = BASE_DIR / "ortho.tif"
 COST_RASTER  = BASE_DIR / "costmap.tif"
 
 DEFAULT_WORKING_EPSG = 6677
+
+# =========================
+# LAS / Point Cloud
+# =========================
+LAS_FILE = BASE_DIR / "pointcloud.las"
+_las_data: dict = {}   # in-memory cache keyed by mtime
+
+
+def _load_and_process_las(max_points: int = 800_000) -> dict:
+    """Load LAS, voxel-downsample, build heightmap. Cache by mtime."""
+    global _las_data
+    if not LAS_FILE.exists():
+        return {}
+
+    mtime = LAS_FILE.stat().st_mtime_ns
+    if _las_data.get("mtime") == mtime:
+        return _las_data
+
+    try:
+        import laspy
+    except ImportError:
+        raise RuntimeError("laspy is not installed. Run: pip install laspy")
+
+    las = laspy.read(str(LAS_FILE))
+    x = np.array(las.x, dtype=np.float64)
+    y = np.array(las.y, dtype=np.float64)
+    z = np.array(las.z, dtype=np.float64)
+
+    # Color: prefer RGB, fall back to intensity, then height coloring
+    try:
+        r = np.array(las.red,   dtype=np.float32) / 65535.0
+        g_ch = np.array(las.green, dtype=np.float32) / 65535.0
+        b = np.array(las.blue,  dtype=np.float32) / 65535.0
+    except Exception:
+        try:
+            intensity = np.array(las.intensity, dtype=np.float32)
+            mn, mx = intensity.min(), intensity.max()
+            intensity = (intensity - mn) / max(mx - mn, 1e-9)
+            r = 0.2 + 0.6 * intensity
+            g_ch = 0.4 + 0.4 * intensity
+            b = np.full_like(intensity, 0.6)
+        except Exception:
+            z_n = ((z - z.min()) / max(z.max() - z.min(), 1e-6)).astype(np.float32)
+            r = 0.2 + 0.6 * z_n
+            g_ch = 0.4 + 0.4 * z_n
+            b = np.full_like(z_n, 0.6)
+
+    pts = np.column_stack([x, y, z, r, g_ch, b]).astype(np.float32)
+
+    # Voxel-grid downsampling
+    N = len(pts)
+    if N > max_points:
+        range_x = float(pts[:, 0].max() - pts[:, 0].min())
+        range_y = float(pts[:, 1].max() - pts[:, 1].min())
+        area = max(range_x * range_y, 1e-6)
+        voxel_size = float(np.sqrt(area / max_points)) * 1.5
+        vx = np.floor((pts[:, 0] - pts[:, 0].min()) / voxel_size).astype(np.int32)
+        vy = np.floor((pts[:, 1] - pts[:, 1].min()) / voxel_size).astype(np.int32)
+        vz_i = np.floor((pts[:, 2] - pts[:, 2].min()) / voxel_size).astype(np.int32)
+        keys = vx.astype(np.int64) * 1_000_003 + vy.astype(np.int64) * 1_009 + vz_i.astype(np.int64)
+        _, idx = np.unique(keys, return_index=True)
+        pts = pts[idx]
+
+    # Build 2-D heightmap (max Z per cell) for snapping in 3-D editing
+    max_cells = 256
+    x_, y_, z_ = pts[:, 0], pts[:, 1], pts[:, 2]
+    min_x, min_y = float(x_.min()), float(y_.min())
+    max_x, max_y = float(x_.max()), float(y_.max())
+    cell_size = float(max(max_x - min_x, max_y - min_y) / max_cells)
+    if cell_size < 0.01:
+        cell_size = 0.01
+    W = int(np.ceil((max_x - min_x) / cell_size)) + 1
+    H = int(np.ceil((max_y - min_y) / cell_size)) + 1
+    flat = np.full(H * W, -1e30, dtype=np.float32)
+    ix = np.floor((x_ - min_x) / cell_size).astype(np.int32).clip(0, W - 1)
+    iy = np.floor((y_ - min_y) / cell_size).astype(np.int32).clip(0, H - 1)
+    np.maximum.at(flat, (iy * W + ix), z_.astype(np.float32))
+    flat[flat == -1e30] = np.nan
+    hm_grid = flat.reshape(H, W)
+
+    meta = {
+        "count": int(len(pts)),
+        "center": {
+            "x": float(np.mean(x_)),
+            "y": float(np.mean(y_)),
+            "z": float(np.mean(z_)),
+        },
+        "bounds": {
+            "min_x": float(x_.min()), "max_x": float(x_.max()),
+            "min_y": float(y_.min()), "max_y": float(y_.max()),
+            "min_z": float(z_.min()), "max_z": float(z_.max()),
+        },
+    }
+
+    _las_data = {
+        "mtime": mtime,
+        "pts": pts,
+        "meta": meta,
+        "hm_grid": hm_grid,
+        "hm_min_x": min_x, "hm_min_y": min_y,
+        "hm_cell_size": cell_size,
+        "hm_W": W, "hm_H": H,
+    }
+    return _las_data
 
 
 # =========================
@@ -126,31 +229,6 @@ def _png_bytes_from_rgb(rgb: np.ndarray) -> io.BytesIO:
     im.save(buf, format="PNG")
     buf.seek(0)
     return buf
-
-def _read_cost_raw_on_canonical() -> np.ndarray:
-    """
-    Returns 2D float array (H, W) with raw cost values on canonical (Ortho) grid.
-    Uses nearest-neighbor resample to preserve discrete cost values.
-    """
-    meta = canonical_meta()
-    W, H = meta["width"], meta["height"]
-    dst_transform = Affine(*meta["transform"][:6])
-    dst_crs = meta["crs"]
-
-    with _open("cost") as src:
-        src_band = src.read(1).astype(np.float32)
-        dst = np.full((H, W), 255.0, dtype=np.float32)  # unreachable default
-        reproject(
-            source=src_band,
-            destination=dst,
-            src_transform=src.transform,
-            src_crs=src.crs,
-            dst_transform=dst_transform,
-            dst_crs=dst_crs,
-            resampling=Resampling.nearest,
-            num_threads=2,
-        )
-        return dst
 
 
 # =========================
@@ -337,15 +415,6 @@ class WaypointMapRequest(BaseModel):
 class MapPointsRequest(BaseModel):
     points: List[MapPoint] = Field(default_factory=list)
 
-class SnapWaypointsRequest(BaseModel):
-    canonical_epsg: int
-    working_epsg: int = DEFAULT_WORKING_EPSG
-    points: List[MapPoint] = Field(default_factory=list)
-    cost_threshold: int = 60
-    search_radius_m: float = 15.0
-    mode: Literal["single", "dual"] = "single"
-    lane_half_width_m: float = 3.0
-
 
 # =========================
 # HTML
@@ -357,6 +426,14 @@ INDEX_HTML = r"""
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>FMS Map Building Tool</title>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/"
+  }
+}
+</script>
 <style>
   :root{
     --bg-0:#06162d;
@@ -576,6 +653,74 @@ INDEX_HTML = r"""
     input[type="range"]{ width:170px; }
     .page{ width:95vw; margin:12px auto 18px; }
   }
+  /* ---- 2D / 3D view tabs ---- */
+  .view-tab-bar{
+    display:flex;
+    gap:6px;
+    margin-bottom:8px;
+  }
+  .view-tab{
+    padding:6px 18px;
+    border-radius:10px;
+    border:1px solid #4a77a5;
+    background:#0f2a4d;
+    color:#9ec0de;
+    cursor:pointer;
+    font-weight:700;
+    font-size:13px;
+    letter-spacing:.04em;
+    transition:background .15s, color .15s, border-color .15s;
+  }
+  .view-tab[data-active="true"]{
+    background:var(--brand-strong);
+    color:#fff;
+    border-color:var(--brand-strong);
+  }
+  /* ---- 3D container ---- */
+  #wrap3d{
+    display:none;
+    position:relative;
+    width:100%;
+    height:78vh;
+    border-radius:18px;
+    border:1px solid #46729e;
+    background:#05101e;
+    overflow:hidden;
+    box-shadow:0 16px 32px rgba(2,8,23,0.25);
+  }
+  #threeContainer{
+    width:100%;
+    height:100%;
+  }
+  .hud3d{
+    position:absolute;
+    right:10px;
+    top:10px;
+    background:#020817cc;
+    color:#dbeafe;
+    padding:6px 10px;
+    border-radius:10px;
+    font-size:12px;
+    pointer-events:none;
+    z-index:5;
+    font-weight:700;
+    border:1px solid #294d73;
+    white-space:pre-line;
+    max-width:260px;
+  }
+  .toolbar3d{
+    position:absolute;
+    left:10px;
+    top:10px;
+    display:flex;
+    gap:6px;
+    flex-wrap:wrap;
+    z-index:5;
+  }
+  .toolbar3d .btn{
+    font-size:12px;
+    padding:6px 10px;
+  }
 </style>
 </head>
 <body>
@@ -606,8 +751,8 @@ INDEX_HTML = r"""
           <span class="pill" id="draftCount">Draft routes: 0</span>
         </div>
         <div class="row" style="margin-top:8px;">
-          <input type="file" id="fileJson" accept="application/json,application/geo+json,.json,.geojson" multiple />
-          <button class="btn" id="showJson">Import JSON / GeoJSON</button>
+          <input type="file" id="fileJson" accept="application/json" multiple />
+          <button class="btn" id="showJson">Import JSON</button>
           <button class="btn" id="clearImported">Clear Imported</button>
         </div>
       </div>
@@ -622,6 +767,24 @@ INDEX_HTML = r"""
           <button class="btn" id="clearAll">Clear All</button>
         </div>
         <div class="hint" style="margin-top:8px;">CostMap は Upload Cost で反映。Ortho が canonical grid です。</div>
+      </div>
+
+      <div class="card" id="lasCard">
+        <h3>Point Cloud (LAS)</h3>
+        <input type="file" id="fileLas" accept=".las,.laz" style="display:none"/>
+        <div class="row">
+          <button class="btn" id="chooseLas">Choose LAS</button>
+          <button class="btn" id="uploadLas">Upload LAS</button>
+          <span class="pill" id="lasStatus">Not loaded</span>
+        </div>
+        <div class="row" style="margin-top:8px;">
+          <label class="row" style="gap:6px;">Point size:
+            <input type="range" id="pointSize" min="0.5" max="10" step="0.5" value="2" style="width:120px;"/>
+            <span class="pill" id="ptSizeVal">2</span>
+          </label>
+          <span class="pill" id="pointCount">-</span>
+        </div>
+        <div class="hint" style="margin-top:6px;">大規模 LAS は自動ボクセルダウンサンプリング (~800K pts)</div>
       </div>
 
       <div class="card">
@@ -727,20 +890,6 @@ INDEX_HTML = r"""
       </div>
 
       <div class="card">
-        <h3>Auto Lane (走行可能領域フィット)</h3>
-        <div class="field">
-          <label>Cost threshold: <input id="costThreshold" type="number" min="0" max="255" value="60"></label>
-          <label>Search radius (m): <input id="snapRadius" type="number" step="0.5" value="15"></label>
-          <label>Lane half-width (m): <input id="laneHalfWidth" type="number" step="0.1" value="3.0"></label>
-        </div>
-        <div class="row" style="margin-top:6px;">
-          <button class="btn" id="snapCenterline">Snap to Centerline (1車線)</button>
-          <button class="btn" id="genDualLane">Generate Dual Lanes (相互2車線)</button>
-        </div>
-        <div class="hint" style="margin-top:6px;">既存 Start / Via / Goal を cost ≤ threshold の走行可能領域中心線に寄せます。Dual は中心線を挟んで左右に lane half-width 離した2車線を生成。</div>
-      </div>
-
-      <div class="card">
         <h3>Saved Items</h3>
         <div class="hint">クリックでハイライト / Deleteで個別削除</div>
         <div class="row" style="margin-top:8px;">
@@ -761,6 +910,11 @@ INDEX_HTML = r"""
     <main class="map-pane">
       <div class="card">
         <h3>Map View</h3>
+        <div class="view-tab-bar">
+          <button class="view-tab" id="tabBtn2D" data-active="true">2D</button>
+          <button class="view-tab" id="tabBtn3D" data-active="false">3D Point Cloud</button>
+        </div>
+        <div id="view2d">
         <div class="map-toolbar">
           <div class="row">
             <button class="btn" id="zoomIn">＋</button>
@@ -801,6 +955,20 @@ INDEX_HTML = r"""
           <div class="hud" id="hud">Zoom 100%</div>
         </div>
         <p class="hint" id="statusMsg">Upload Ortho first.</p>
+        </div><!-- end #view2d -->
+
+        <div id="wrap3d">
+          <div id="threeContainer"></div>
+          <div class="hud3d" id="hud3d">3D View\nUpload LAS to start</div>
+          <div class="toolbar3d" id="toolbar3d">
+            <button class="btn" id="mode3dOrbit"   data-active="true">Orbit</button>
+            <button class="btn" id="mode3dPolygon" data-active="false">Draw Area</button>
+            <button class="btn" id="mode3dPath"    data-active="false">Draw Path</button>
+            <button class="btn" id="finish3dEdit"  style="display:none">Finish</button>
+            <button class="btn" id="cancel3dEdit"  style="display:none">Cancel</button>
+            <button class="btn" id="undo3d"        style="display:none">Undo Pt</button>
+          </div>
+        </div>
       </div>
     </main>
   </div>
@@ -1582,15 +1750,23 @@ INDEX_HTML = r"""
   function drawDraftRoutes(){
     draftRoutes.forEach((r, i)=>{
       const selected = (i === selectedDraftIndex);
-      drawPolylineMap(r.spline, `${r.color}88`, 2);
-      drawPolylineMap(r.thinned, r.color, selected ? 5 : 3);
+      const color = r.color || DRAFT_COLORS[i % DRAFT_COLORS.length];
+      drawPolylineMap(r.spline, `${color}88`, 2);
+      drawPolylineMap(r.thinned, color, selected ? 5 : 3);
+      // 3D-drawn routes: verts3d → 2D projection
+      if((!r.thinned||!r.thinned.length)&&(!r.spline||!r.spline.length)&&r.verts3d&&r.verts3d.length>=2){
+        const pts=r.verts3d.map(v=>({x:v.wx,y:v.wy}));
+        drawPolylineMap(pts, color, selected ? 5 : 3);
+        for(const p of pts) drawPointMap(p, 4, color);
+      }
       drawPolylineMap(r.left, "#10b981", 2);
       drawPolylineMap(r.right, "#8b5cf6", 2);
       if(selected && r.thinned && r.thinned.length){
         drawPolylineMap(r.thinned, "#ffffffaa", 2);
       }
-      if(r.thinned && r.thinned.length){
-        drawLabelMap(r.thinned[0], r.name, "#f8fafc");
+      const labelPts=(r.thinned&&r.thinned.length)?r.thinned:(r.verts3d&&r.verts3d.length?r.verts3d.map(v=>({x:v.wx,y:v.wy})):null);
+      if(labelPts&&labelPts.length){
+        drawLabelMap(labelPts[0], r.name, "#f8fafc");
       }
     });
   }
@@ -1713,7 +1889,15 @@ INDEX_HTML = r"""
 
       const outRoutes = [];
       for(const r of draftRoutes){
-        if(r.haulRoute && r.haulRoute.length){
+        if(r.verts3d && r.verts3d.length >= 2){
+          // 3D path: convert world XY to lon/lat via server, keep Z
+          try{
+            const xys = r.verts3d.map(v=>({x:v.wx, y:v.wy}));
+            const ll  = await canonicalPointsToLonLat(xys);
+            const route3d = ll.map((p,i)=>({lat:p.lat, lng:p.lng, z:r.verts3d[i]?.wz ?? 0}));
+            outRoutes.push({name:r.name, route:route3d, is3d:true});
+          }catch(e){ console.warn('3D path lonlat conversion failed', e); }
+        }else if(r.haulRoute && r.haulRoute.length){
           outRoutes.push({name: r.name, route: r.haulRoute});
         }
       }
@@ -1726,11 +1910,17 @@ INDEX_HTML = r"""
       const polygonsOut = [];
       for(const p of polygons){
         const points_xy = (p.points || []).map(q=>({x:q.x, y:q.y}));
-        const points = await canonicalPointsToLonLat(p.points || []);
+        const points    = await canonicalPointsToLonLat(p.points || []);
+        // Attach Z if this polygon came from 3D editing
+        const pts3d = p.points3d || [];
+        if(pts3d.length === points.length){
+          points.forEach((pt,i)=>{ pt.z = pts3d[i]?.wz ?? 0; });
+        }
         polygonsOut.push({
           name: p.name || `Area_${polygonsOut.length+1}`,
           points,
           points_xy,
+          ...(pts3d.length ? {points3d: pts3d} : {}),
         });
       }
 
@@ -1745,62 +1935,14 @@ INDEX_HTML = r"""
     }
   };
 
-  // ---------- import JSON / GeoJSON multi ----------
-  function isGeoJSONObject(obj){
-    if(!obj || typeof obj !== 'object') return false;
-    const t = obj.type;
-    return t === 'FeatureCollection' || t === 'Feature' ||
-           t === 'LineString' || t === 'MultiLineString' ||
-           t === 'GeometryCollection';
-  }
-
-  function extractRoutesFromGeoJSON(obj, baseName){
-    const routes = [];
-    let counter = 0;
-    function pushLine(coords, name){
-      if(!Array.isArray(coords) || coords.length < 2) return;
-      const route = [];
-      for(const c of coords){
-        if(!Array.isArray(c) || c.length < 2) continue;
-        const lng = +c[0], lat = +c[1];
-        if(!Number.isFinite(lng) || !Number.isFinite(lat)) continue;
-        route.push({ lat, lng });
-      }
-      if(route.length >= 2){
-        const nm = name || `${baseName}_${++counter}`;
-        routes.push({ name: String(nm), route });
-      }
-    }
-    function handleGeometry(geom, props){
-      if(!geom || !geom.type) return;
-      const name = (props && (props.name || props.id || props.title)) || null;
-      if(geom.type === 'LineString'){
-        pushLine(geom.coordinates, name);
-      }else if(geom.type === 'MultiLineString'){
-        (geom.coordinates||[]).forEach((c, i)=> pushLine(c, name ? `${name}_${i+1}` : null));
-      }else if(geom.type === 'GeometryCollection'){
-        (geom.geometries||[]).forEach(g => handleGeometry(g, props));
-      }
-    }
-    if(obj.type === 'FeatureCollection'){
-      (obj.features||[]).forEach(ft => handleGeometry(ft && ft.geometry, ft && ft.properties));
-    }else if(obj.type === 'Feature'){
-      handleGeometry(obj.geometry, obj.properties);
-    }else{
-      handleGeometry(obj, null);
-    }
-    return routes;
-  }
-
+  // ---------- import JSON multi ----------
   $('showJson').onclick = async ()=>{
     if(!meta){ alert('Upload Ortho first.'); return; }
     const files = Array.from($('fileJson').files||[]);
-    if(!files.length){ alert('Select JSON / GeoJSON files.'); return; }
+    if(!files.length){ alert('Select JSON files.'); return; }
 
     const offset_m = parseFloat($('offsetM').value||'0') || 0;
     let combined = { haulRoutes: [] };
-    let geoJsonCount = 0;
-    let haulJsonCount = 0;
 
     for(const f of files){
       try{
@@ -1808,22 +1950,10 @@ INDEX_HTML = r"""
         const parsed = JSON.parse(text);
         if(parsed && parsed.haulRoutes && Array.isArray(parsed.haulRoutes)){
           combined.haulRoutes.push(...parsed.haulRoutes);
-          haulJsonCount++;
-        }else if(isGeoJSONObject(parsed)){
-          const baseName = (f.name||'GeoJSON').replace(/\.(geo)?json$/i, '');
-          const routes = extractRoutesFromGeoJSON(parsed, baseName);
-          if(routes.length){
-            combined.haulRoutes.push(...routes);
-            geoJsonCount++;
-          }
         }
       }catch(e){ console.warn('JSON parse error', f.name, e); }
     }
-    if(!combined.haulRoutes.length){
-      alert('No valid haulRoutes / GeoJSON LineString found.');
-      return;
-    }
-    statusMsg.textContent = `Importing ${combined.haulRoutes.length} route(s) (json:${haulJsonCount}, geojson:${geoJsonCount})...`;
+    if(!combined.haulRoutes.length){ alert('No valid haulRoutes found.'); return; }
 
     const res = await fetch('/json_to_canonical_with_offset', {
       method:'POST', headers:{'Content-Type':'application/json'},
@@ -1837,82 +1967,396 @@ INDEX_HTML = r"""
   };
   $('clearImported').onclick = ()=>{ importedRoutes=[]; drawAll(); updateCounts(); };
 
-  // ---------- auto lane: snap / dual ----------
-  function gatherRoutePoints(){
-    const pts = [];
-    if(state.start) pts.push({x:state.start.x, y:state.start.y});
-    for(const m of state.mids) pts.push({x:m.x, y:m.y});
-    if(state.goal) pts.push({x:state.goal.x, y:state.goal.y});
-    return pts;
+
+  // =====================================================
+  // 3D View  (Three.js + LAS point cloud)
+  // =====================================================
+
+  // --- Tab switching ---
+  const tab2dBtn = $('tabBtn2D');
+  const tab3dBtn = $('tabBtn3D');
+  const view2dEl = $('view2d');
+  const wrap3dEl = $('wrap3d');
+  let activeView  = '2d';
+
+  async function switchToView(v){
+    if(v === activeView) return;
+    activeView = v;
+    if(v === '2d'){
+      tab2dBtn.dataset.active = 'true';
+      tab3dBtn.dataset.active = 'false';
+      view2dEl.style.display  = '';
+      wrap3dEl.style.display  = 'none';
+      setTimeout(resizeOverlay, 50);
+    }else{
+      tab2dBtn.dataset.active = 'false';
+      tab3dBtn.dataset.active = 'true';
+      view2dEl.style.display  = 'none';
+      wrap3dEl.style.display  = 'block';
+      await init3DView();
+    }
+  }
+  tab2dBtn.onclick = ()=> switchToView('2d');
+  tab3dBtn.onclick = ()=> switchToView('3d');
+
+  // --- LAS upload UI ---
+  const fileLasInput = $('fileLas');
+  $('chooseLas').onclick = ()=> fileLasInput.click();
+  $('uploadLas').onclick = async ()=>{
+    const f = fileLasInput.files[0];
+    if(!f){ alert('LASファイルを選択してください。'); return; }
+    $('lasStatus').textContent = 'Uploading...';
+    const form = new FormData();
+    form.append('file', f);
+    try{
+      const res = await fetch('/upload_las',{ method:'POST', body:form });
+      const js  = await res.json();
+      if(js.error){ $('lasStatus').textContent='Error'; alert(js.error); return; }
+      $('lasStatus').textContent = `${js.count.toLocaleString()} pts`;
+      if(s3d.initialized) await tryLoadLas();
+    }catch(e){
+      $('lasStatus').textContent='Error';
+      alert('Upload failed: '+e.message);
+    }
+  };
+  $('pointSize').oninput = ()=>{
+    $('ptSizeVal').textContent = $('pointSize').value;
+    if(s3d.pointsObj) s3d.pointsObj.material.size = parseFloat($('pointSize').value)*0.05;
+  };
+
+  // --- 3D state object ---
+  const s3d = {
+    initialized:false,
+    THREE:null, OrbitControls:null,
+    renderer:null, scene:null, camera:null, controls:null,
+    pointsObj:null,
+    center:{x:0,y:0,z:0},
+    sceneScale:0.5,
+    heightmap:null,   // {data:Float32Array, W, H, min_x, min_y, cell_size}
+    mode:'orbit',     // 'orbit' | 'polygon' | 'path'
+    editVerts:[],     // [{wx,wy,wz}]  world coords
+    editType:null,
+    isDrawing:false,
+    previewLine:null, previewSphere:null,
+    overlayGroup:null,
+    hovWX:0, hovWY:0, hovWZ:0,
+  };
+
+  // world (X,Y,Z) → Three.js coords (Y is up = world Z)
+  function w2t(wx,wy,wz){
+    const c=s3d.center;
+    return {x: wx-c.x, y: wz-c.z, z: -(wy-c.y)};
   }
 
-  async function callSnap(mode){
-    if(!meta){ alert('Upload Ortho first.'); return null; }
-    if(!loaded.cost){ alert('Upload Cost raster first.'); return null; }
-    const pts = gatherRoutePoints();
-    if(pts.length < 2){ alert('Set Start and Goal first.'); return null; }
+  function getHeightAt(wx,wy){
+    const hm=s3d.heightmap;
+    if(!hm) return s3d.center.z;
+    const col=Math.floor((wx-hm.min_x)/hm.cell_size);
+    const row=Math.floor((wy-hm.min_y)/hm.cell_size);
+    if(col<0||col>=hm.W||row<0||row>=hm.H) return s3d.center.z;
+    const v=hm.data[row*hm.W+col];
+    return (!isFinite(v)||isNaN(v)) ? s3d.center.z : v;
+  }
 
-    const body = {
-      canonical_epsg: meta.epsg,
-      working_epsg: parseInt(($('workingEPSG').value||'6677'),10) || 6677,
-      points: pts,
-      cost_threshold: parseInt(($('costThreshold').value||'60'),10),
-      search_radius_m: parseFloat($('snapRadius').value||'15') || 15,
-      mode,
-      lane_half_width_m: parseFloat($('laneHalfWidth').value||'3') || 3,
-    };
-    const res = await fetch('/snap_waypoints', {
-      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+  function getRayGroundIntersect(event){
+    if(!s3d.THREE||!s3d.renderer) return null;
+    const THREE=s3d.THREE;
+    const rect=s3d.renderer.domElement.getBoundingClientRect();
+    const nx=((event.clientX-rect.left)/rect.width )*2-1;
+    const ny=-((event.clientY-rect.top )/rect.height)*2+1;
+    const raycaster=new THREE.Raycaster();
+    raycaster.setFromCamera(new THREE.Vector2(nx,ny), s3d.camera);
+    const plane=new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+    const target=new THREE.Vector3();
+    if(!raycaster.ray.intersectPlane(plane,target)) return null;
+    const wx= target.x+s3d.center.x;
+    const wy=-(target.z)+s3d.center.y;
+    const wz= getHeightAt(wx,wy);
+    return {wx,wy,wz};
+  }
+
+  function makeLineFromWVerts(verts,color,loop=false){
+    const THREE=s3d.THREE;
+    const pos=[];
+    for(const v of verts){const t=w2t(v.wx,v.wy,v.wz); pos.push(t.x,t.y,t.z);}
+    if(loop&&verts.length>1){const t=w2t(verts[0].wx,verts[0].wy,verts[0].wz); pos.push(t.x,t.y,t.z);}
+    const geo=new THREE.BufferGeometry();
+    geo.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+    return new THREE.Line(geo,new THREE.LineBasicMaterial({color,linewidth:2}));
+  }
+
+  function makeSphere(wx,wy,wz,color,r=1.0){
+    const THREE=s3d.THREE;
+    const t=w2t(wx,wy,wz);
+    const m=new THREE.Mesh(
+      new THREE.SphereGeometry(r,8,8),
+      new THREE.MeshBasicMaterial({color})
+    );
+    m.position.set(t.x,t.y,t.z);
+    return m;
+  }
+
+  function redraw3DOverlays(){
+    if(!s3d.initialized||!s3d.overlayGroup) return;
+    while(s3d.overlayGroup.children.length){
+      const c=s3d.overlayGroup.children[0];
+      c.geometry?.dispose(); c.material?.dispose();
+      s3d.overlayGroup.remove(c);
+    }
+    const cz=s3d.center.z;
+    const r3d=s3d.sceneScale||0.5;
+    polygons.forEach((poly,i)=>{
+      const verts=(poly.points3d||[]).length
+        ? poly.points3d.map(v=>({wx:v.wx,wy:v.wy,wz:v.wz}))
+        : (poly.points||[]).map(p=>({wx:p.x,wy:p.y,wz:cz}));
+      if(verts.length<2) return;
+      const col=POLYGON_COLORS[i%POLYGON_COLORS.length];
+      s3d.overlayGroup.add(makeLineFromWVerts(verts,col,true));
+      verts.forEach(v=>s3d.overlayGroup.add(makeSphere(v.wx,v.wy,v.wz,col,r3d)));
     });
-    const js = await res.json();
-    if(js.error){ alert(js.error); return null; }
-    return js;
+    draftRoutes.forEach((dr,i)=>{
+      let verts=dr.verts3d||[];
+      if(!verts.length){
+        const pts=dr.thinned||dr.spline||[];
+        if(pts.length>=2) verts=pts.map(p=>({wx:p.x,wy:p.y,wz:cz}));
+      }
+      if(verts.length<2) return;
+      const col=dr.color||DRAFT_COLORS[i%DRAFT_COLORS.length];
+      s3d.overlayGroup.add(makeLineFromWVerts(verts,col,false));
+      verts.forEach(v=>s3d.overlayGroup.add(makeSphere(v.wx,v.wy,v.wz,col,r3d)));
+    });
   }
 
-  function applySnappedPoints(snapped){
-    if(!snapped || snapped.length < 2) return;
-    state.start = { x: snapped[0].x, y: snapped[0].y };
-    state.goal  = { x: snapped[snapped.length-1].x, y: snapped[snapped.length-1].y };
-    state.mids  = snapped.slice(1, -1).map(p=>({x:p.x, y:p.y}));
-    debugMap = null;
+  function update3DPreview(){
+    if(!s3d.initialized||!s3d.isDrawing) return;
+    if(s3d.previewLine){s3d.previewLine.geometry.dispose();s3d.previewLine.material.dispose();s3d.scene.remove(s3d.previewLine);s3d.previewLine=null;}
+    if(s3d.previewSphere){s3d.previewSphere.geometry.dispose();s3d.previewSphere.material.dispose();s3d.scene.remove(s3d.previewSphere);s3d.previewSphere=null;}
+    const verts=[...s3d.editVerts,{wx:s3d.hovWX,wy:s3d.hovWY,wz:s3d.hovWZ}];
+    if(verts.length>=2){s3d.previewLine=makeLineFromWVerts(verts,0xfbbf24,false); s3d.scene.add(s3d.previewLine);}
+    s3d.previewSphere=makeSphere(s3d.hovWX,s3d.hovWY,s3d.hovWZ,0xfbbf24,0.8);
+    s3d.scene.add(s3d.previewSphere);
   }
 
-  $('snapCenterline').onclick = async ()=>{
-    statusMsg.textContent = 'Snapping waypoints to centerline...';
-    const js = await callSnap('single');
-    if(!js) return;
-    applySnappedPoints(js.points);
-    statusMsg.textContent = `Snapped: ${js.moved_count||0}/${(js.points||[]).length} points moved.`;
-    drawAll();
-    updateCounts();
-  };
+  function set3DMode(m){
+    s3d.mode=m;
+    $('mode3dOrbit').dataset.active  =(m==='orbit')  ?'true':'false';
+    $('mode3dPolygon').dataset.active=(m==='polygon')?'true':'false';
+    $('mode3dPath').dataset.active   =(m==='path')   ?'true':'false';
+    const drawing=(m!=='orbit');
+    s3d.isDrawing=drawing;
+    $('finish3dEdit').style.display=drawing?'':'none';
+    $('cancel3dEdit').style.display=drawing?'':'none';
+    $('undo3d').style.display      =drawing?'':'none';
+    if(s3d.controls) s3d.controls.enabled=!drawing;
+    s3d.editVerts=[]; s3d.editType=(drawing?m:null);
+    if(s3d.previewLine){s3d.previewLine.geometry.dispose();s3d.previewLine.material.dispose();s3d.scene.remove(s3d.previewLine);s3d.previewLine=null;}
+    if(s3d.previewSphere){s3d.previewSphere.geometry.dispose();s3d.previewSphere.material.dispose();s3d.scene.remove(s3d.previewSphere);s3d.previewSphere=null;}
+  }
 
-  $('genDualLane').onclick = async ()=>{
-    statusMsg.textContent = 'Generating dual lanes...';
-    const js = await callSnap('dual');
-    if(!js) return;
-    applySnappedPoints(js.points);
-
-    const baseName = (($('routeName').value||'Lane').trim() || 'Lane');
-    const pushLaneAsDraft = (laneName, pts)=>{
-      if(!pts || pts.length < 2) return;
-      const idx = draftRoutes.length;
-      draftRoutes.push({
-        name: laneName,
-        color: colorByIndex(DRAFT_COLORS, idx),
-        haulRoute: null,
-        spline: pts.map(p=>({x:p.x, y:p.y})),
-        thinned: pts.map(p=>({x:p.x, y:p.y})),
-        left: [],
-        right: [],
+  function finish3DEdit(){
+    const verts=s3d.editVerts;
+    if(verts.length<2){alert('2点以上追加してください。');return;}
+    if(s3d.editType==='polygon'){
+      const name=($('polygonNamePreset').value||$('polygonName').value||`Area_${polygons.length+1}`).trim()||`Area_${polygons.length+1}`;
+      polygons.push({
+        name,
+        points3d:verts.map(v=>({wx:v.wx,wy:v.wy,wz:v.wz})),
+        points  :verts.map(v=>({x:v.wx,y:v.wy})),
       });
-    };
-    pushLaneAsDraft(`${baseName}_L`, js.left);
-    pushLaneAsDraft(`${baseName}_R`, js.right);
-    statusMsg.textContent = `Dual lanes generated (centered + L/R saved as drafts).`;
-    drawAll();
+    }else if(s3d.editType==='path'){
+      const name=($('routeName').value||'Route_3D').trim()||'Route_3D';
+      draftRoutes.push({
+        name,
+        color: DRAFT_COLORS[draftRoutes.length % DRAFT_COLORS.length],
+        verts3d:verts.map(v=>({wx:v.wx,wy:v.wy,wz:v.wz})),
+        haulRoute:[],
+      });
+    }
+    set3DMode('orbit');
     updateCounts();
-  };
+    redraw3DOverlays();
+    drawAll();
+  }
+
+  async function init3DView(){
+    if(s3d.initialized){
+      if(!s3d.pointsObj) await tryLoadLas();
+      redraw3DOverlays();
+      return;
+    }
+    const hud3=$('hud3d');
+    hud3.textContent='Loading Three.js…';
+    try{
+      s3d.THREE=(await import('https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js'));
+      const mod=await import('https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/controls/OrbitControls.js');
+      s3d.OrbitControls=mod.OrbitControls;
+    }catch(e){
+      hud3.textContent='Three.js load failed:\n'+e.message;
+      return;
+    }
+    const THREE=s3d.THREE;
+    const container=$('threeContainer');
+    const W=container.clientWidth||800, H=container.clientHeight||600;
+
+    s3d.renderer=new THREE.WebGLRenderer({antialias:true});
+    s3d.renderer.setSize(W,H);
+    s3d.renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+    s3d.renderer.setClearColor(0x05101e);
+    container.appendChild(s3d.renderer.domElement);
+
+    s3d.scene=new THREE.Scene();
+    s3d.camera=new THREE.PerspectiveCamera(55,W/H,0.1,500000);
+    s3d.camera.position.set(0,200,400);
+
+    const grid=new THREE.GridHelper(2000,50,0x1a4070,0x0d2c52);
+    s3d.scene.add(grid);
+    s3d.scene.add(new THREE.AmbientLight(0xffffff,0.8));
+    s3d.scene.add(new THREE.AxesHelper(50));
+
+    s3d.controls=new s3d.OrbitControls(s3d.camera,s3d.renderer.domElement);
+    s3d.controls.enableDamping=true;
+    s3d.controls.dampingFactor=0.08;
+    s3d.controls.screenSpacePanning=true;
+
+    s3d.overlayGroup=new THREE.Group();
+    s3d.scene.add(s3d.overlayGroup);
+
+    new ResizeObserver(()=>{
+      const w2=container.clientWidth,h2=container.clientHeight;
+      if(!w2||!h2) return;
+      s3d.renderer.setSize(w2,h2);
+      s3d.camera.aspect=w2/h2;
+      s3d.camera.updateProjectionMatrix();
+    }).observe(container);
+
+    s3d.renderer.domElement.addEventListener('mousemove',e=>{
+      if(!s3d.isDrawing) return;
+      const hit=getRayGroundIntersect(e);
+      if(!hit) return;
+      s3d.hovWX=hit.wx; s3d.hovWY=hit.wy; s3d.hovWZ=hit.wz;
+      update3DPreview();
+      hud3.textContent=`Mode: ${s3d.mode}\nX: ${hit.wx.toFixed(2)}\nY: ${hit.wy.toFixed(2)}\nZ: ${hit.wz.toFixed(2)}\n追加済: ${s3d.editVerts.length}点`;
+    });
+
+    let _clickPrev=0;
+    s3d.renderer.domElement.addEventListener('click',e=>{
+      if(!s3d.isDrawing) return;
+      const now=Date.now();
+      if(now-_clickPrev<300){_clickPrev=now;return;} // ignore dblclick second
+      _clickPrev=now;
+      const hit=getRayGroundIntersect(e);
+      if(!hit) return;
+      s3d.editVerts.push({wx:hit.wx,wy:hit.wy,wz:hit.wz});
+      update3DPreview();
+      hud3.textContent=`Mode: ${s3d.mode}\nX: ${hit.wx.toFixed(2)}\nY: ${hit.wy.toFixed(2)}\nZ: ${hit.wz.toFixed(2)}\n追加済: ${s3d.editVerts.length}点\n(ダブルクリックで確定)`;
+    });
+
+    s3d.renderer.domElement.addEventListener('dblclick',e=>{
+      if(!s3d.isDrawing) return;
+      e.preventDefault();
+      finish3DEdit();
+    });
+
+    (function animate(){
+      requestAnimationFrame(animate);
+      s3d.controls.update();
+      s3d.renderer.render(s3d.scene,s3d.camera);
+    })();
+
+    s3d.initialized=true;
+    hud3.textContent='3D View ready\nLASをアップロードしてください';
+
+    $('mode3dOrbit').onclick  =()=>set3DMode('orbit');
+    $('mode3dPolygon').onclick=()=>set3DMode('polygon');
+    $('mode3dPath').onclick   =()=>set3DMode('path');
+    $('finish3dEdit').onclick =()=>finish3DEdit();
+    $('cancel3dEdit').onclick =()=>set3DMode('orbit');
+    $('undo3d').onclick       =()=>{if(s3d.editVerts.length){s3d.editVerts.pop();update3DPreview();}};
+
+    await tryLoadLas();
+    redraw3DOverlays();
+  }
+
+  async function tryLoadLas(){
+    try{
+      const m=await fetch('/las_meta').then(r=>r.json());
+      if(m.error||!m.count) return;
+      await loadPointCloud(m);
+    }catch(e){
+      $('hud3d').textContent='点群ロードエラー:\n'+e.message;
+      console.error('tryLoadLas error:', e);
+    }
+  }
+
+  async function loadPointCloud(meta){
+    if(!s3d.initialized) return;
+    const THREE=s3d.THREE;
+    const hud3=$('hud3d');
+    hud3.textContent='点群を読み込み中…';
+    s3d.center={x:meta.center.x,y:meta.center.y,z:meta.center.z};
+
+    // Heightmap
+    try{
+      const hmRes=await fetch('/las_heightmap.bin');
+      if(hmRes.ok){
+        const buf=await hmRes.arrayBuffer();
+        const dv=new DataView(buf);
+        let off=0;
+        const min_x    =dv.getFloat64(off,true); off+=8;
+        const min_y    =dv.getFloat64(off,true); off+=8;
+        const cell_size=dv.getFloat64(off,true); off+=8;
+        const W        =dv.getInt32 (off,true);  off+=4;
+        const H        =dv.getInt32 (off,true);  off+=4;
+        s3d.heightmap={data:new Float32Array(buf,off,W*H),W,H,min_x,min_y,cell_size};
+      }
+    }catch(_e){}
+
+    // Points binary
+    const res=await fetch('/las_points.bin');
+    if(!res.ok){hud3.textContent='点群ロード失敗'; return;}
+    const buf=await res.arrayBuffer();
+    const pts=new Float32Array(buf);
+    const N=pts.length/6;
+
+    const posArr=new Float32Array(N*3);
+    const colArr=new Float32Array(N*3);
+    const cx=s3d.center.x, cy=s3d.center.y, cz=s3d.center.z;
+    for(let i=0;i<N;i++){
+      const bi=i*6;
+      posArr[i*3+0]= pts[bi+0]-cx;
+      posArr[i*3+1]= pts[bi+2]-cz;     // Three.js Y = world Z
+      posArr[i*3+2]=-(pts[bi+1]-cy);   // Three.js Z = -world Y
+      colArr[i*3+0]= pts[bi+3];
+      colArr[i*3+1]= pts[bi+4];
+      colArr[i*3+2]= pts[bi+5];
+    }
+
+    if(s3d.pointsObj){s3d.scene.remove(s3d.pointsObj);s3d.pointsObj.geometry.dispose();s3d.pointsObj.material.dispose();}
+    const geo=new THREE.BufferGeometry();
+    geo.setAttribute('position',new THREE.BufferAttribute(posArr,3));
+    geo.setAttribute('color',   new THREE.BufferAttribute(colArr,3));
+    s3d.pointsObj=new THREE.Points(geo,new THREE.PointsMaterial({
+      size:parseFloat($('pointSize').value||'2')*0.05,
+      vertexColors:true, sizeAttenuation:true,
+    }));
+    s3d.scene.add(s3d.pointsObj);
+
+    const b=meta.bounds;
+    const ext=Math.max(b.max_x-b.min_x, b.max_y-b.min_y, b.max_z-b.min_z);
+    s3d.sceneScale=Math.max(ext*0.005, 0.3);
+    const groundY=b.min_z-cz;
+    s3d.scene.children.filter(c=>c.isGridHelper).forEach(g=>{g.position.y=groundY;});
+    s3d.camera.position.set(0,ext*0.5,ext*1.0);
+    s3d.camera.lookAt(0,groundY,0);
+    s3d.controls.target.set(0,groundY,0);
+    s3d.controls.update();
+
+    $('pointCount').textContent=`${N.toLocaleString()} pts`;
+    $('lasStatus').textContent='Loaded';
+    hud3.textContent=`${N.toLocaleString()}点\n左ドラッグ:回転 / 右ドラッグ:パン / ホイール:ズーム\nDrawモードでエリア・パスを作成`;
+    redraw3DOverlays();
+  }
+
 
   // ---------- init ----------
   let initiallyCollapsed = false;
@@ -2176,117 +2620,6 @@ def waypoints_from_map(req: WaypointMapRequest):
 
 
 # =========================
-# Route: Snap waypoints to drivable-area centerline
-# =========================
-@app.post("/snap_waypoints")
-def snap_waypoints(req: SnapWaypointsRequest):
-    try:
-        if not COST_RASTER.exists():
-            return JSONResponse({"error": "Cost raster not loaded."}, status_code=400)
-        if len(req.points) < 2:
-            return JSONResponse({"error": "Need at least 2 waypoints."}, status_code=400)
-
-        meta = canonical_meta()
-        canonical_epsg_server = int(meta["epsg"])
-        if int(req.canonical_epsg) != canonical_epsg_server:
-            return JSONResponse(
-                {"error": f"canonical_epsg mismatch: request={req.canonical_epsg}, server={canonical_epsg_server}"},
-                status_code=400,
-            )
-
-        cost = _read_cost_raw_on_canonical()
-        threshold = int(req.cost_threshold)
-        mask = (cost <= threshold).astype(np.uint8)
-        if mask.sum() == 0:
-            return JSONResponse({"error": "No drivable pixels under threshold."}, status_code=400)
-        dist_field = distance_transform_edt(mask).astype(np.float32)
-
-        H, W = dist_field.shape
-
-        a, b, c, d, e, f = meta["transform"][:6]
-        det = a * e - b * d
-        if abs(det) < 1e-12:
-            return JSONResponse({"error": "Degenerate affine transform."}, status_code=500)
-        inv00, inv01 = e / det, -b / det
-        inv10, inv11 = -d / det, a / det
-
-        def map_to_px(mx: float, my: float):
-            dx, dy = mx - c, my - f
-            return inv00 * dx + inv01 * dy, inv10 * dx + inv11 * dy
-
-        def px_to_map(px: float, py: float):
-            return a * px + b * py + c, d * px + e * py + f
-
-        m_per_px = 0.5 * (np.hypot(a, d) + np.hypot(b, e))
-        search_radius_px = max(1.0, float(req.search_radius_m) / max(m_per_px, 1e-9))
-
-        pts_map = np.array([[p.x, p.y] for p in req.points], dtype=float)
-        pts_px = np.array([map_to_px(p[0], p[1]) for p in pts_map], dtype=float)
-
-        n = len(pts_px)
-        tangents = np.zeros_like(pts_px)
-        tangents[0] = pts_px[1] - pts_px[0]
-        tangents[-1] = pts_px[-1] - pts_px[-2]
-        for i in range(1, n - 1):
-            tangents[i] = pts_px[i + 1] - pts_px[i - 1]
-        norms = np.linalg.norm(tangents, axis=1, keepdims=True) + 1e-12
-        tangents = tangents / norms
-
-        n_samples = max(21, int(2 * search_radius_px) + 1)
-        snapped_px = pts_px.copy()
-        moved_count = 0
-        for i in range(n):
-            p = pts_px[i]
-            t = tangents[i]
-            perp = np.array([-t[1], t[0]])
-            ts_arr = np.linspace(-search_radius_px, search_radius_px, n_samples)
-            best_val = -1.0
-            best_off = 0.0
-            for ti in ts_arr:
-                qx = p[0] + perp[0] * ti
-                qy = p[1] + perp[1] * ti
-                ix, iy = int(round(qx)), int(round(qy))
-                if 0 <= ix < W and 0 <= iy < H:
-                    v = float(dist_field[iy, ix])
-                    if v > best_val:
-                        best_val = v
-                        best_off = ti
-            if best_val > 0.0:
-                snapped_px[i] = p + perp * best_off
-                if abs(best_off) > 1e-6:
-                    moved_count += 1
-
-        snapped_map = np.array([px_to_map(q[0], q[1]) for q in snapped_px], dtype=float)
-        snapped_points = [{"x": float(x), "y": float(y)} for x, y in snapped_map]
-
-        result: Dict[str, Any] = {
-            "points": snapped_points,
-            "moved_count": int(moved_count),
-            "m_per_px": float(m_per_px),
-        }
-
-        if req.mode == "dual":
-            working_epsg = int(req.working_epsg)
-            xy_work = proj_xy(snapped_map, canonical_epsg_server, working_epsg)
-            half_w = float(req.lane_half_width_m)
-            left_work, right_work = offset_lane(xy_work, half_w)
-
-            def to_canon_list(arr_work):
-                if arr_work is None:
-                    return None
-                arr_c = proj_xy(arr_work, working_epsg, canonical_epsg_server)
-                return [{"x": float(x), "y": float(y)} for x, y in arr_c]
-
-            result["left"] = to_canon_list(left_work)
-            result["right"] = to_canon_list(right_work)
-
-        return JSONResponse(result)
-
-    except Exception as e:
-        return JSONResponse({"error": f"Snap failed: {e}"}, status_code=500)
-
-
-# =========================
 # Route: Import JSON -> canonical map points (with offsets)
 # =========================
 @app.post("/json_to_canonical_with_offset")
@@ -2345,8 +2678,79 @@ def json_to_canonical_with_offset(payload: Dict[str, Any]):
 
 
 # =========================
+# Routes: LAS / Point Cloud
+# =========================
+@app.post("/upload_las")
+async def upload_las(file: UploadFile = File(...)):
+    global _las_data
+    try:
+        content = await file.read()
+        with open(LAS_FILE, "wb") as f:
+            f.write(content)
+        _las_data = {}  # invalidate cache
+        data = _load_and_process_las()
+        return {"ok": True, "count": data.get("meta", {}).get("count", 0)}
+    except Exception as e:
+        return JSONResponse({"error": f"LAS upload failed: {e}"}, status_code=500)
+
+
+@app.get("/las_meta")
+def las_meta_endpoint():
+    if not LAS_FILE.exists():
+        return JSONResponse({"error": "No LAS file uploaded"}, status_code=404)
+    try:
+        data = _load_and_process_las()
+        return JSONResponse(data.get("meta", {}))
+    except Exception as e:
+        return JSONResponse({"error": f"LAS meta failed: {e}"}, status_code=500)
+
+
+@app.get("/las_points.bin")
+def las_points_bin():
+    if not LAS_FILE.exists():
+        return JSONResponse({"error": "No LAS"}, status_code=404)
+    try:
+        data = _load_and_process_las()
+        pts: np.ndarray = data["pts"]   # (N, 6) float32: x, y, z, r, g, b
+        return Response(
+            content=pts.tobytes(),
+            media_type="application/octet-stream",
+            headers={"Cache-Control": "no-store"},
+        )
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/las_heightmap.bin")
+def las_heightmap_bin():
+    """Binary: [min_x f64, min_y f64, cell_size f64, W i32, H i32] + float32[H*W]"""
+    if not LAS_FILE.exists():
+        return JSONResponse({"error": "No LAS"}, status_code=404)
+    try:
+        import struct
+        data = _load_and_process_las()
+        hm: np.ndarray = data["hm_grid"].copy()
+        # Replace NaN with min valid Z
+        valid = np.isfinite(hm)
+        if valid.any():
+            hm[~valid] = float(np.nanmin(hm))
+        header = struct.pack(
+            "<dddii",
+            data["hm_min_x"], data["hm_min_y"], data["hm_cell_size"],
+            data["hm_W"], data["hm_H"],
+        )
+        return Response(
+            content=header + hm.astype(np.float32).tobytes(),
+            media_type="application/octet-stream",
+            headers={"Cache-Control": "no-store"},
+        )
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# =========================
 # Local run
 # =========================
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8001)

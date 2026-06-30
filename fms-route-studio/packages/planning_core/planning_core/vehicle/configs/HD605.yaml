@@ -1,0 +1,39 @@
+# Komatsu HD605 — リジッドフレーム・前輪操舵ダンプ（約63t級）
+# ⚠️ 暫定値(estimated)。実諸元は要入手（残課題2）。HD785 を雛形にした概算。
+id: HD605
+name: Komatsu HD605-8 (estimated)
+kinematic_type: rigid_bicycle
+spec_status: estimated
+
+overall_length: 9.4
+overall_width: 4.9
+overall_height: 4.7
+
+wheel_base: 4.2          # TODO 実値
+max_steer_angle: 0.70    # TODO 実値
+min_turning_radius: 9.0  # TODO 実値
+
+kappa_max_fwd: 0.11
+kappa_max_rev: 0.10
+kappa_rate_max: 0.09
+max_steer_rate: 0.45
+
+max_speed_fwd: 18.0
+max_speed_rev: 6.0
+
+footprint_radius: 3.2
+road_width: 7.2
+footprint_polygon:
+  - [4.7, 2.45]
+  - [4.7, -2.45]
+  - [-4.7, -2.45]
+  - [-4.7, 2.45]
+
+# 安全検証(Stage 5)しきい値（暫定・要現場調整）
+max_grade_pct: 30.0
+min_clearance_m: 0.5
+
+# 速度プロファイル(Stage 6)（暫定・要現場調整）
+max_lateral_accel: 1.5
+max_accel: 0.5
+max_decel: 1.0

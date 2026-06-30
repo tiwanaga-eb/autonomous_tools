@@ -1,0 +1,39 @@
+# Komatsu HD785 — リジッドフレーム・前輪操舵ダンプ（約91t級）
+# 実値ベース（PathGenerator/vehicle_configs/HD785-7.yaml 由来）
+id: HD785
+name: Komatsu HD785-7
+kinematic_type: rigid_bicycle
+spec_status: measured
+
+overall_length: 10.29
+overall_width: 5.53
+overall_height: 5.05
+
+wheel_base: 4.95
+max_steer_angle: 0.72        # rad (~41.3deg)
+min_turning_radius: 10.1
+
+kappa_max_fwd: 0.099
+kappa_max_rev: 0.090
+kappa_rate_max: 0.08
+max_steer_rate: 0.45
+
+max_speed_fwd: 18.0
+max_speed_rev: 6.0
+
+footprint_radius: 3.6
+road_width: 8.0
+footprint_polygon:
+  - [5.145, 2.765]
+  - [5.145, -2.765]
+  - [-5.145, -2.765]
+  - [-5.145, 2.765]
+
+# 安全検証(Stage 5)しきい値（暫定・要現場調整）
+max_grade_pct: 30.0
+min_clearance_m: 0.5
+
+# 速度プロファイル(Stage 6)（暫定・要現場調整）
+max_lateral_accel: 1.5
+max_accel: 0.5
+max_decel: 1.0

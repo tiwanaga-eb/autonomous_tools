@@ -1,0 +1,39 @@
+# Komatsu CD110R — クローラ運搬車（履帯・スキッドステア）
+# ⚠️ 暫定値(estimated)。履帯仕様・その場旋回特性は要入手（残課題2）。
+# 自転車モデル不可（wheel_base は持たない）。その場旋回可。
+# 専用プランナー skid_primitives は新規（残課題7）。
+id: CD110R
+name: Komatsu CD110R (estimated)
+kinematic_type: tracked_skid
+spec_status: estimated
+
+overall_length: 5.935       # ユーザー提供の実寸
+overall_width: 2.880        # ユーザー提供の実寸
+overall_height: 2.78
+
+# スキッドステア: 自転車R_minの概念が無い。その場旋回可。
+can_turn_in_place: true
+min_turning_radius: 0.0       # その場旋回（評価は別指標で）
+track_width: 2.080            # ユーザー提供の実寸（左右履帯中心間, 2080mm）
+
+kappa_rate_max: 0.30
+max_speed_fwd: 3.6            # ~13 km/h（概算）
+max_speed_rev: 3.0
+
+footprint_radius: 3.3        # 外接円半径 ≈ sqrt(2.9675^2 + 1.44^2)
+road_width: 3.0
+# 車体中心基準。全長5.935×全幅2.880 の矩形（±2.9675, ±1.44）。
+footprint_polygon:
+  - [2.9675, 1.44]
+  - [2.9675, -1.44]
+  - [-2.9675, -1.44]
+  - [-2.9675, 1.44]
+
+# 安全検証(Stage 5)しきい値（暫定・要現場調整）
+max_grade_pct: 30.0
+min_clearance_m: 0.5
+
+# 速度プロファイル(Stage 6)（暫定・要現場調整）
+max_lateral_accel: 1.5
+max_accel: 0.5
+max_decel: 1.0

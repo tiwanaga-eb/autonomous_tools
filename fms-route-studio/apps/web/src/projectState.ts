@@ -1,0 +1,98 @@
+// プロジェクト永続化用: ワーキング状態の抽出/適用（設計書 §15 / Phase 6）。
+// レイヤはサーバ側レジストリで別管理のため含めない（読込後もレイヤはそのまま）。
+// v2: **経路ジオメトリ(route)も保存**し、再読込時にそのまま復元する（経路・エリアを保存→呼出→編集）。
+//     spotResult はレイヤ依存のクリアランス評価を含むため従来どおり保存しない。
+
+import { pickLayer } from "@/layerSelect";
+import { useStore } from "@/store/useStore";
+
+const VERSION = 2;
+
+export function serializeProject(): Record<string, unknown> {
+  const s = useStore.getState();
+  return {
+    version: VERSION,
+    waypoints: s.waypoints,
+    areas: s.areas,
+    route: s.route, // アクティブ経路ジオメトリ(trajectory/analysis/safety)を保存（再読込で復元）
+    savedRoutes: s.savedRoutes, // プロジェクトに保存した複数の名前付き経路ライブラリ（複数台の経路集合）
+    showSavedRoutes: s.showSavedRoutes,
+    fleetBays: s.fleetBays, // すれ違い点（待避所）設定: routeId → BayCfg
+    // 経路が紐づくレイヤidを固定保存（再読込で当時のコスト/走行可能領域へ正しく紐づく）。
+    costLayerId: pickLayer(s.layers, "cost", s.costLayerId)?.id ?? null,
+    drivableLayerId: pickLayer(s.layers, "drivable", s.drivableLayerId)?.id ?? null,
+    importedRoutes: s.importedRoutes,
+    vehicleId: s.vehicleId,
+    planMode: s.planMode,
+    algorithm: s.algorithm,
+    routeSpacing: s.routeSpacing,
+    roadWidthM: s.roadWidthM,
+    enforceFootprint: s.enforceFootprint,
+    enforceMinRadius: s.enforceMinRadius,
+    allowReverse: s.allowReverse,
+    refineElasticBand: s.refineElasticBand,
+    showWaypoints: s.showWaypoints,
+    costOpacity: s.costOpacity,
+    costVisible: s.costVisible,
+    drivableOpacity: s.drivableOpacity,
+    drivableVisible: s.drivableVisible,
+    spotStart: s.spotStart,
+    spotTarget: s.spotTarget,
+    spotMaxSwitch: s.spotMaxSwitch,
+    spotMethod: s.spotMethod,
+    spotSmooth: s.spotSmooth,
+    spotStationaryMode: s.spotStationaryMode,
+    spotMinSpeedKmh: s.spotMinSpeedKmh,
+    spotContainAreaId: s.spotContainAreaId,
+    spotRoadWidthM: s.spotRoadWidthM,
+  };
+}
+
+export function applyProject(state: Record<string, unknown>): void {
+  const s = useStore.getState();
+  const g = <T,>(k: string, fallback: T): T => (state[k] === undefined ? fallback : (state[k] as T));
+
+  const ver = typeof state.version === "number" ? state.version : 0;
+  if (ver > VERSION) {
+    // 新しい版で保存されたプロジェクト: 未知フィールドは無視し、既知分のみ復元（best-effort）。
+    console.warn(`project version ${ver} > supported ${VERSION}; loading known fields only`);
+  }
+
+  s.setWaypoints(g("waypoints", []) as never);
+  s.setAreas(g("areas", []) as never);
+  s.setImportedRoutes(g("importedRoutes", []) as never);
+  // v2+: 保存された経路ジオメトリをそのまま復元。v1（route無し）は null（waypoints から再生成）。
+  s.setRoute(g<unknown>("route", null) as never);
+  s.setSpotResult(null);
+
+  s.setSavedRoutes(g("savedRoutes", []) as never);
+  s.setShowSavedRoutes(g("showSavedRoutes", true));
+  s.setFleetConflicts(null);
+  const bays = g<Record<string, import("@/types/api").BayCfg>>("fleetBays", {});
+  Object.entries(bays).forEach(([rid, cfg]) => s.setFleetBay(rid, cfg));
+  s.setVehicleId(g("vehicleId", null));
+  s.setCostLayerId(g("costLayerId", null));
+  s.setDrivableLayerId(g("drivableLayerId", null));
+  s.setPlanMode(g("planMode", "waypoint_guided") as never);
+  s.setAlgorithm(g("algorithm", "spline") as never);
+  s.setRouteSpacing(g("routeSpacing", 2.0));
+  s.setRoadWidthM(g("roadWidthM", 0));
+  s.setEnforceFootprint(g("enforceFootprint", true));
+  s.setEnforceMinRadius(g("enforceMinRadius", true));
+  s.setAllowReverse(g("allowReverse", false));
+  s.setRefineElasticBand(g("refineElasticBand", false));
+  s.setShowWaypoints(g("showWaypoints", true));
+  s.setCostOpacity(g("costOpacity", 0.6));
+  s.setCostVisible(g("costVisible", true));
+  s.setDrivableOpacity(g("drivableOpacity", 0.5));
+  s.setDrivableVisible(g("drivableVisible", true));
+  s.setSpotStart(g("spotStart", null));
+  s.setSpotTarget(g("spotTarget", null));
+  s.setSpotMaxSwitch(g("spotMaxSwitch", 1) as 0 | 1);
+  s.setSpotMethod(g("spotMethod", "auto") as import("@/types/api").SpottingMethod);
+  s.setSpotSmooth(g("spotSmooth", true));
+  s.setSpotStationaryMode(g("spotStationaryMode", "auto") as "auto" | "allow" | "deny");
+  s.setSpotMinSpeedKmh(g("spotMinSpeedKmh", 0));
+  s.setSpotContainAreaId(g("spotContainAreaId", null));
+  s.setSpotRoadWidthM(g("spotRoadWidthM", 0));
+}
