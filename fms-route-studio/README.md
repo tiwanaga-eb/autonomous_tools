@@ -1,10 +1,7 @@
 # FMS Route Studio (SmartConstruction AI)
 
 地図・コストマップ・走行可能領域・経路生成（静的/動的）・解析・安全検証・AIアシスタントを統合した、
-建機向けルート設計プラットフォーム。`Map_Builder_Proto`（FMS Map Building Tool）の全面刷新版。
-
-設計の全体像: [docs/REARCHITECTURE.md](../Map_Builder_Protoのコピー/docs/REARCHITECTURE.md)。
-
+建機向けルート設計プラットフォーム。'FMS Map Building Tool'
 ## 設計思想（制約ベースを主・AIを補助）
 
 FMS/管制側の標準パイプラインに沿う:
@@ -23,14 +20,19 @@ AIは「経路のブラックボックス生成」ではなく**補助**: 自然
 
 ```
 fms-route-studio/
-├── packages/planning_core/   # 共通プランニング基盤（純Python・本体ロジック）
-│   ├── planners/   spline / dubins / grid_astar / hybrid_astar / elastic_band / curvature_limit
-│   ├── analysis/   curvature / grade / velocity / safety / trajectory
-│   ├── drivable/ costmap/ footprint.py / simulator(spotting) / vehicle / scenarios.py
-├── services/api/             # FastAPI（API専用, :8077）  layers/costmap/drivable/plan/analyze/simulate/projects/agent
+├── packages/planning_core/   # 共通プランニング基盤（純Python・本体ロジック / pip install -e 可）
+│   └── planning_core/
+│       ├── planners/   spline / dubins / grid_astar / hybrid_astar / elastic_band / curvature_limit
+│       ├── analysis/   curvature / grade / velocity / safety / trajectory
+│       ├── drivable/   costmap/ footprint.py / simulator(spotting) / scenarios.py
+│       ├── fleet/      multi-vehicle: conflict / network / passing / sim（進行中）
+│       ├── vehicle/    車両諸元 YAML（HD785/HD605/HM400/CD110R）
+│       └── geometry/ io/ models/
+├── services/api/             # FastAPI（API専用, :8077）。planning_core への薄いラッパ
+│   └── app/routers/   layers / costmap / drivable / geo(経路生成・解析) / simulate / fleet / vehicles / projects / agent（+ /api 直下に plan/tiles）
 ├── apps/web/                 # React+TS+Vite+Zustand（:5173）OpenLayers native 6677 + three.js 3D
-├── docs/SCENARIO_REPORT.md   # 鉱山/土木シナリオの自動チューニングレポート
-└── scripts/scenario_report.py
+├── scripts/scenario_report.py
+└── docs/SCENARIO_REPORT.md   # 鉱山/土木シナリオの自動チューニングレポート
 ```
 
 ## 主な機能
@@ -41,35 +43,58 @@ fms-route-studio/
 - **寄り付き**: 切り返し0/1・必須後進・道幅・コスト関数（距離/時間/後進/切返/コスト）・退出軌道・不可理由・再生
 - **解析**: κ/dκ-ds/操舵/勾配/速度プロファイルのチャート、安全検証（配信可否＋不可理由）
 - **3D**: LAS点群(RGB)/DSM地形メッシュ・道幅帯・経路/寄り付き
+- **マルチ車両（進行中）**: 複数台のルート競合検出・待避/追い越し・フリート走行シミュレーション（`planning_core/fleet`, `/api/fleet`）
 - **AIアシスタント**: マルチプロバイダ（Claude / Groq / OpenRouter / ローカルOllama）。tool-use で全工程を操作
 - **永続化/IO**: プロジェクト保存・CSV/GeoJSONエクスポート（速度プロファイル含む）
 
 ## 実行
 
-Python venv は隣の `Map_Builder_Protoのコピー/.venv`。working CRS = **EPSG:6677**。
+前提: **Python 3.10+** / **Node 18+**。working CRS = **EPSG:6677**。
+レイヤレジストリ等のデータは `~/.fms-route-studio/data` に保存（環境変数 `FRS_DATA_DIR` で変更可）。
+
+### 1. セットアップ（初回のみ）
 
 ```bash
-VENV=/path/to/Map_Builder_Protoのコピー/.venv/bin/python   # 実環境のパスに合わせる
+# Python: venv を作り、両パッケージを editable install（api は planning_core に依存）
+python -m venv .venv && source .venv/bin/activate
+pip install -e "packages/planning_core[dev]"
+pip install -e "services/api[dev]"
+
+# フロント
+cd apps/web && npm install && cd -
+```
+
+### 2. 起動
+
+```bash
+# venv を有効化していれば PYTHONPATH 指定は不要（editable install 済みのため）
+source .venv/bin/activate
 
 # API（:8077）。AI を使うなら鍵を env で（下記「AI」参照）
-PYTHONPATH=packages/planning_core nohup $VENV -m uvicorn app.main:app \
-  --app-dir services/api --host 127.0.0.1 --port 8077 &
+uvicorn app.main:app --app-dir services/api --host 127.0.0.1 --port 8077
 
-# フロント（:5173, /api と /health を :8077 にプロキシ）
-cd apps/web && npm install && npm run dev
+# 別ターミナルで — フロント（:5173, /api と /health を :8077 にプロキシ）
+cd apps/web && npm run dev   # → http://localhost:5173
 ```
+
+起動完了まで数秒〜十数秒。`curl -s localhost:8077/health` が通れば準備完了。
+planning_core / app のコードを変更したら API を再起動（バックグラウンド起動時は `pkill -f "uvicorn app.main"` で停止してから再起動）。
+
+> editable install を使わない場合は、各コマンドに `PYTHONPATH=packages/planning_core` を付けても動作する。
 
 ## テスト / ビルド
 
 ```bash
+source .venv/bin/activate
+
 # planning_core（純ロジック）
-PYTHONPATH=packages/planning_core $VENV -m pytest packages/planning_core/tests -q
-# api（planning_core と分けて実行：合同だと PROJ db 競合）
-PYTHONPATH=packages/planning_core $VENV -m pytest services/api/tests -q
-# web
-cd apps/web && npm run build && npm run test
-# 鉱山/土木シナリオのチューニングレポート生成
-PYTHONPATH=packages/planning_core $VENV scripts/scenario_report.py   # → docs/SCENARIO_REPORT.md
+pytest packages/planning_core/tests -q
+# api（planning_core と分けて実行：合同だと PROJ db が競合する）
+pytest services/api/tests -q
+# web（型チェック付きビルド＋ vitest）
+cd apps/web && npm run build && npm run test && cd -
+# 鉱山/土木シナリオのチューニングレポート生成 → docs/SCENARIO_REPORT.md
+python scripts/scenario_report.py
 ```
 
 ## AI アシスタント（マルチプロバイダ）
