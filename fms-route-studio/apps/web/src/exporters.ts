@@ -30,13 +30,21 @@ export function csv(rows: (string | number | null)[][]): string {
     .join("\n");
 }
 
+/** [lng,lat] 座標列に標高 z[m] を第3要素として付与（RFC 7946）。z が1点も無ければ 2D のまま。 */
+export function coordsWithZ(coords: [number, number][], zs: (number | null | undefined)[]): number[][] {
+  if (!zs.some((z) => z != null)) return coords;
+  return coords.map((c, i) => (zs[i] != null ? [c[0], c[1], Number((zs[i] as number).toFixed(3))] : c));
+}
+
 // ---- 経路（解析軌跡） ----
 export function exportRouteCsv(): boolean {
   const route = useStore.getState().route;
   if (!route || route.trajectory.points.length < 2) return false;
-  const header = ["s_m", "x", "y", "heading_deg", "curvature_1pm", "dkappa_ds", "grade_pct", "steer_deg", "gear", "speed_mps", "time_s"];
+  const header = ["s_m", "x", "y", "z_m", "heading_deg", "curvature_1pm", "dkappa_ds", "grade_pct", "steer_deg", "gear", "speed_mps", "time_s"];
   const rows = route.trajectory.points.map((p) => [
-    p.s.toFixed(3), p.x.toFixed(3), p.y.toFixed(3), p.heading_deg.toFixed(2),
+    p.s.toFixed(3), p.x.toFixed(3), p.y.toFixed(3),
+    p.z != null ? p.z.toFixed(3) : null,
+    p.heading_deg.toFixed(2),
     p.curvature.toFixed(6), p.curvature_rate.toFixed(6),
     p.grade_pct ?? null, p.steer_deg ?? null, p.gear ?? "F",
     p.speed_mps != null ? p.speed_mps.toFixed(3) : null, p.time_s != null ? p.time_s.toFixed(2) : null,
@@ -48,7 +56,8 @@ export function exportRouteCsv(): boolean {
 export async function exportRouteGeoJson(): Promise<boolean> {
   const route = useStore.getState().route;
   if (!route || route.trajectory.points.length < 2) return false;
-  const coords = await toLngLat(route.trajectory.points.map((p) => ({ x: p.x, y: p.y })));
+  const pts = route.trajectory.points;
+  const coords = coordsWithZ(await toLngLat(pts.map((p) => ({ x: p.x, y: p.y }))), pts.map((p) => p.z));
   const fc = {
     type: "FeatureCollection",
     features: [
@@ -78,7 +87,7 @@ function routeFeature(
   name: string,
   vehicleId: string | null | undefined,
   traj: { length_m?: number; min_radius_m?: number | null },
-  coords: [number, number][],
+  coords: number[][],
   feasible: boolean | null,
 ) {
   return {
@@ -104,7 +113,7 @@ export async function exportAllRoutesGeoJson(): Promise<number> {
   const features: unknown[] = [];
   for (const sr of usable) {
     const t = sr.route.trajectory;
-    const coords = await toLngLat(t.points.map((p) => ({ x: p.x, y: p.y })));
+    const coords = coordsWithZ(await toLngLat(t.points.map((p) => ({ x: p.x, y: p.y }))), t.points.map((p) => p.z));
     features.push(routeFeature(sr.name, sr.vehicleId, t, coords, sr.route.analysis?.feasible ?? null));
   }
   download("routes.geojson", JSON.stringify({ type: "FeatureCollection", features }, null, 2), "application/geo+json");
@@ -117,7 +126,7 @@ export async function exportAllRoutesSeparate(): Promise<number> {
   const usable = saved.filter((r) => (r.route?.trajectory?.points?.length ?? 0) >= 2);
   for (const sr of usable) {
     const t = sr.route.trajectory;
-    const coords = await toLngLat(t.points.map((p) => ({ x: p.x, y: p.y })));
+    const coords = coordsWithZ(await toLngLat(t.points.map((p) => ({ x: p.x, y: p.y }))), t.points.map((p) => p.z));
     const fc = { type: "FeatureCollection", name: sr.name, features: [routeFeature(sr.name, sr.vehicleId, t, coords, sr.route.analysis?.feasible ?? null)] };
     download(`${sanitizeFilename(sr.name)}.geojson`, JSON.stringify(fc, null, 2), "application/geo+json");
     await new Promise((res) => setTimeout(res, 150)); // 連続ダウンロードの取りこぼし回避
@@ -126,12 +135,22 @@ export async function exportAllRoutesSeparate(): Promise<number> {
 }
 
 // ---- 寄り付き（spotting） ----
+// 寄り付きの標高 z は解析軌跡（trajectory: 同一点列から構築＝index 対応）から引く。
+function spotZ(sr: { points: unknown[]; trajectory?: { points: { z?: number | null }[] } }): (number | null)[] {
+  const tp = sr.trajectory?.points;
+  if (!tp || tp.length !== sr.points.length) return sr.points.map(() => null);
+  return tp.map((p) => p.z ?? null);
+}
+
 export function exportSpottingCsv(): boolean {
   const sr = useStore.getState().spotResult;
   if (!sr || sr.points.length < 2) return false;
-  const header = ["s_m", "t_s", "x", "y", "heading_deg", "gear"];
-  const rows = sr.points.map((p) => [
-    p.s.toFixed(3), p.t.toFixed(2), p.x.toFixed(3), p.y.toFixed(3), p.heading_deg.toFixed(2), p.gear,
+  const zs = spotZ(sr);
+  const header = ["s_m", "t_s", "x", "y", "z_m", "heading_deg", "gear"];
+  const rows = sr.points.map((p, i) => [
+    p.s.toFixed(3), p.t.toFixed(2), p.x.toFixed(3), p.y.toFixed(3),
+    zs[i] != null ? (zs[i] as number).toFixed(3) : null,
+    p.heading_deg.toFixed(2), p.gear,
   ]);
   download("spotting.csv", csv([header, ...rows]), "text/csv");
   return true;
@@ -140,7 +159,7 @@ export function exportSpottingCsv(): boolean {
 export async function exportSpottingGeoJson(): Promise<boolean> {
   const sr = useStore.getState().spotResult;
   if (!sr || sr.points.length < 2) return false;
-  const coords = await toLngLat(sr.points.map((p) => ({ x: p.x, y: p.y })));
+  const coords = coordsWithZ(await toLngLat(sr.points.map((p) => ({ x: p.x, y: p.y }))), spotZ(sr));
   const switchCoords = await toLngLat(sr.switch_points);
   const features: unknown[] = [
     {

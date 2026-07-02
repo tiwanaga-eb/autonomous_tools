@@ -6,7 +6,7 @@ import { dispatch } from "@/commandBus";
 import { pickLayer } from "@/layerSelect";
 import { useStore } from "@/store/useStore";
 import type { EditMode } from "@/store/useStore";
-import type { Vehicle } from "@/types/api";
+import type { Trajectory, Vehicle } from "@/types/api";
 import { errMessage, runBusy } from "@/ui/busy";
 
 const MODES: { mode: EditMode; label: string }[] = [
@@ -83,6 +83,52 @@ export function RoutePanel() {
   }
   function deleteSavedRoute(id: string) {
     setSavedRoutes(savedRoutes.filter((r) => r.id !== id));
+  }
+
+  // 高さ(Z)埋め込み: 現在の経路＋保存済み経路の各点に、点群由来 DSM の標高を後付けサンプリング。
+  // （経路生成時にコストマップ(DSM)があれば自動で z が付くが、後からデータを読み込んだ場合や
+  //  旧プロジェクトの保存経路にはこのボタンで付与する）
+  async function embedHeights() {
+    const st = useStore.getState();
+    if (!st.route && st.savedRoutes.length === 0) {
+      setStatus("経路がありません（先に経路を生成または読込してください）", "warn");
+      return;
+    }
+    await runBusy(
+      "高さ(Z)を埋め込み中…",
+      async () => {
+        const cl = pickLayer(st.layers, "cost", st.costLayerId);
+        let missing = 0;
+        let done = 0;
+        const embed = async (traj: Trajectory): Promise<Trajectory> => {
+          const pts = traj.points.map((p) => [p.x, p.y] as [number, number]);
+          const res = await api.elevationSample(pts, cl?.id ?? null);
+          missing += res.n_missing;
+          done += 1;
+          return { ...traj, points: traj.points.map((p, i) => ({ ...p, z: res.z[i] ?? null })) };
+        };
+        if (st.route) {
+          const t = await embed(st.route.trajectory);
+          dispatch({ type: "SET_ROUTE", route: { ...st.route, trajectory: t } });
+        }
+        if (st.savedRoutes.length) {
+          const updated = [];
+          for (const sr of st.savedRoutes) {
+            if ((sr.route?.trajectory?.points?.length ?? 0) >= 1) {
+              updated.push({ ...sr, route: { ...sr.route, trajectory: await embed(sr.route.trajectory) } });
+            } else {
+              updated.push(sr);
+            }
+          }
+          setSavedRoutes(updated);
+        }
+        setStatus(
+          `高さを埋め込みました（${done}本${missing ? ` / DSM範囲外 ${missing}点` : ""}）。CSV/GeoJSON/3D 表示に反映されます`,
+          "success",
+        );
+      },
+      { failPrefix: "高さ埋め込みに失敗" },
+    );
   }
 
   // 分岐(交差点): 保存経路上の点(s_frac)を起点姿勢(親の接線)にして、そこから枝経路を計画する。
@@ -291,6 +337,15 @@ export function RoutePanel() {
             style={{ flex: 1 }}
           />
           <button onClick={saveCurrentRoute} disabled={!route}>現在の経路を保存</button>
+        </div>
+        <div className="row" style={{ marginTop: 4 }}>
+          <button
+            onClick={embedHeights}
+            disabled={busy || (!route && savedRoutes.length === 0)}
+            title="点群から生成した DSM の標高を、現在の経路と保存済み経路の各点にサンプリングして z として埋め込みます（CSV/GeoJSON/3D 表示に反映）"
+          >
+            高さ(Z)を埋め込む（点群DSM）
+          </button>
         </div>
         {savedRoutes.length > 0 && (
           <ul className="list" style={{ marginTop: 6 }}>

@@ -23,6 +23,7 @@ class TrajPoint(BaseModel):
     s: float                       # arc length [m]
     x: float
     y: float
+    z: float | None = None         # 標高 [m]（点群由来 DSM からサンプル。None if no DSM）
     heading_deg: float             # +East / CCW
     curvature: float               # kappa [1/m]
     curvature_rate: float          # dkappa/ds [1/m^2]

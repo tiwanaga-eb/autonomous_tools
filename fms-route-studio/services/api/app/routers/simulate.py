@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 # 寄り付き候補生成アルゴリズム。auto=全手法をコスト比較 / 個別手法。
 SpottingMethod = Literal["auto", "dubins", "reeds_shepp", "hybrid_astar"]
 
-from planning_core.analysis import build_trajectory, grade_profile, summarize, verify_safety
+from planning_core.analysis import build_trajectory, elevation_and_grade, summarize, verify_safety
 from planning_core.footprint import path_min_clearance
 from planning_core.simulator import CostWeights, plan_spotting
 
@@ -250,14 +250,15 @@ def _attach_analysis(out: dict, res, veh, dsm, dsm_t, dmask, dtransform, min_spe
     xy = np.array([[p["x"], p["y"]] for p in pts], float)
     gears = [p.get("gear") for p in pts]
     grade = None
+    zprof = None
     if dsm is not None and dsm_t is not None:
         try:
             s = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(xy[:, 0]), np.diff(xy[:, 1])))])
-            grade = grade_profile(xy, s, dsm, dsm_t)
+            zprof, grade = elevation_and_grade(xy, s, dsm, dsm_t)
         except (rasterio.errors.RasterioIOError, ValueError, IndexError):
             # DSM 読込失敗/CRS不整合/範囲外は勾配なしで継続（想定外は伝播させる）
-            grade = None
-    traj = build_trajectory(xy, vehicle=veh, grade_pct=grade, gears=gears, min_speed_mps=min_speed_mps)
+            grade = zprof = None
+    traj = build_trajectory(xy, vehicle=veh, grade_pct=grade, gears=gears, min_speed_mps=min_speed_mps, z=zprof)
     result = summarize(traj, vehicle=veh, drivable_mask=dmask, transform=dtransform)
     clearance_m = None
     if dmask is not None and dtransform is not None:

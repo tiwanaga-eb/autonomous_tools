@@ -139,6 +139,26 @@ def test_plan_auto_grid_astar_and_grade(tmp_path):
     # ランプ DSM (z=0.1x) なので縦断勾配が入る
     assert any(p["grade_pct"] is not None for p in pts)
     assert j["analysis"]["max_grade_pct"] is not None
+    # 標高 z も自動埋め込みされる（点群由来 DSM のサンプル値 ≒ 0.1*(x-30000)）
+    zs = [p for p in pts if p.get("z") is not None]
+    assert zs, "trajectory points should carry z when DSM is present"
+    for p in zs:
+        assert abs(p["z"] - 0.1 * (p["x"] - 30000.0)) < 1.0
+
+    # 後付けサンプリング API（保存済みルート等への z 付与）
+    er = client.post(
+        "/api/elevation/sample",
+        json={"points": [{"x": 30010, "y": 119010}, {"x": 30040, "y": 119030}, {"x": -9999, "y": -9999}],
+              "costmap_layer_id": cost_id},
+    )
+    assert er.status_code == 200, er.text
+    ej = er.json()
+    assert ej["n"] == 3 and ej["n_missing"] == 1
+    assert ej["z"][2] is None
+    assert abs(ej["z"][0] - 1.0) < 1.0 and abs(ej["z"][1] - 4.0) < 1.0
+    # costmap_layer_id 省略時は DSM を持つ最新 cost レイヤへフォールバック
+    er2 = client.post("/api/elevation/sample", json={"points": [{"x": 30010, "y": 119010}]})
+    assert er2.status_code == 200 and er2.json()["layer_id"] == cost_id
 
     client.delete(f"/api/layers/{dv_id}")
     client.delete(f"/api/layers/{cost_id}")

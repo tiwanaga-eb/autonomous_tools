@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { csv, sanitizeFilename } from "@/exporters";
+import { coordsWithZ, csv, sanitizeFilename } from "@/exporters";
 
 describe("csv", () => {
   it("joins rows/cols and renders null/undefined as empty", () => {
@@ -29,5 +29,20 @@ describe("sanitizeFilename", () => {
 
   it("keeps Japanese route names intact", () => {
     expect(sanitizeFilename("搬入路A")).toBe("搬入路A");
+  });
+});
+
+describe("coordsWithZ", () => {
+  const coords: [number, number][] = [
+    [139.1, 35.1],
+    [139.2, 35.2],
+  ];
+
+  it("appends z[m] as the third coordinate where present (RFC 7946)", () => {
+    expect(coordsWithZ(coords, [120.1234, null])).toEqual([[139.1, 35.1, 120.123], [139.2, 35.2]]);
+  });
+
+  it("keeps 2D coordinates when no point has z", () => {
+    expect(coordsWithZ(coords, [null, undefined])).toEqual(coords);
   });
 });

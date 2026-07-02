@@ -51,6 +51,7 @@ export interface TrajPoint {
   s: number;
   x: number;
   y: number;
+  z?: number | null; // 標高[m]（点群由来DSMからサンプル。DSM無し/範囲外は null）
   heading_deg: number;
   curvature: number;
   curvature_rate: number;

@@ -42,9 +42,11 @@ export function AnalysisPanel() {
       steer: pts.map((p) => (p.steer_deg == null ? NaN : p.steer_deg)),
       grade: pts.map((p) => (p.grade_pct == null ? NaN : p.grade_pct)),
       speed: pts.map((p) => (p.speed_mps == null ? NaN : p.speed_mps)),
+      elev: pts.map((p) => (p.z == null ? NaN : p.z)),
       hasSteer: pts.some((p) => p.steer_deg != null),
       hasGrade: pts.some((p) => p.grade_pct != null),
       hasSpeed: pts.some((p) => p.speed_mps != null),
+      hasElev: pts.some((p) => p.z != null),
     };
   }, [view]);
 
@@ -185,6 +187,18 @@ export function AnalysisPanel() {
             ys={series.grade}
             limit={limitFor(["grade"], v)}
             bands={bandsFor(["grade"], v)}
+            hoverIndex={hoverIndex}
+            onHover={setHoverPoint}
+          />
+        )}
+        {series.hasElev && (
+          <ProfileChart
+            title="標高 z"
+            unit="m"
+            color="#b45309"
+            xs={series.xs}
+            ys={series.elev}
+            fmt={(x) => x.toFixed(1)}
             hoverIndex={hoverIndex}
             onHover={setHoverPoint}
           />

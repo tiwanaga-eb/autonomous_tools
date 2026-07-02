@@ -168,6 +168,14 @@ export const api = {
   analyze: (body: { points: XY[]; vehicle_id?: string | null; costmap_layer_id?: string | null }) =>
     jpost<{ trajectory: Trajectory; analysis: AnalysisResult }>("/api/analyze", body),
 
+  // 任意の点列（保存済みルート等）に点群由来 DSM の標高 z[m] を後付けサンプリング。
+  elevationSample: (points: [number, number][], costmapLayerId?: string | null, smoothM?: number) =>
+    jpost<{ z: (number | null)[]; layer_id: string; n: number; n_missing: number }>("/api/elevation/sample", {
+      points: points.map(([x, y]) => ({ x, y })),
+      costmap_layer_id: costmapLayerId ?? null,
+      ...(smoothM != null ? { smooth_m: smoothM } : {}),
+    }),
+
   listVehicles: () => jget<Vehicle[]>("/api/vehicles"),
 
   vehicleDetail: (id: string) =>

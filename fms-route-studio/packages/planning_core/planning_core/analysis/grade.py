@@ -75,8 +75,13 @@ def _smooth_keep_nan(z: np.ndarray, win: int) -> np.ndarray:
     return sm
 
 
-def grade_profile(xy: np.ndarray, s: np.ndarray, dsm: np.ndarray, transform, smooth_m: float = 8.0) -> np.ndarray:
-    """軌跡に沿った縦断勾配 [%]（= 100 * dz/ds）。DSM 欠損点は np.nan。
+def elevation_and_grade(
+    xy: np.ndarray, s: np.ndarray, dsm: np.ndarray, transform, smooth_m: float = 8.0
+) -> tuple[np.ndarray, np.ndarray]:
+    """軌跡に沿った (標高 z [m], 縦断勾配 [%]) を DSM 1回サンプルで返す。
+
+    z は勾配と同じ平滑化（Savitzky-Golay, 窓 smooth_m）後の値＝grade は厳密に 100*dz/ds と整合。
+    DSM 欠損点は z=np.nan（grade も NaN）。
 
     smooth_m: 微分前に z を平滑化する窓[m]（疎な/ノイジーな DSM の偽勾配スパイクを抑制。
     車両長スケール ~8m の実勾配を見る意味でも妥当）。0 で平滑化なし。
@@ -84,7 +89,7 @@ def grade_profile(xy: np.ndarray, s: np.ndarray, dsm: np.ndarray, transform, smo
     z = sample_bilinear(dsm, transform, xy)
     s = np.asarray(s, float)
     if len(z) < 2:
-        return np.zeros(len(z))
+        return z, np.zeros(len(z))
     s_safe = s.copy()
     for i in range(1, len(s_safe)):
         if s_safe[i] <= s_safe[i - 1]:
@@ -95,4 +100,14 @@ def grade_profile(xy: np.ndarray, s: np.ndarray, dsm: np.ndarray, transform, smo
         if win >= 3:
             z = _smooth_keep_nan(z, win)
     dz = np.gradient(z, s_safe)
-    return dz * 100.0
+    return z, dz * 100.0
+
+
+def elevation_profile(xy: np.ndarray, s: np.ndarray, dsm: np.ndarray, transform, smooth_m: float = 8.0) -> np.ndarray:
+    """軌跡に沿った標高 z [m]（DSM バイリニア・サンプル＋grade と同一の平滑化）。欠損は np.nan。"""
+    return elevation_and_grade(xy, s, dsm, transform, smooth_m)[0]
+
+
+def grade_profile(xy: np.ndarray, s: np.ndarray, dsm: np.ndarray, transform, smooth_m: float = 8.0) -> np.ndarray:
+    """軌跡に沿った縦断勾配 [%]（= 100 * dz/ds）。DSM 欠損点は np.nan。"""
+    return elevation_and_grade(xy, s, dsm, transform, smooth_m)[1]

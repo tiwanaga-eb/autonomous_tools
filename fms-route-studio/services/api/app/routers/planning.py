@@ -15,7 +15,7 @@ import rasterio
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from planning_core.analysis import build_trajectory, grade_profile, min_turning_radius, summarize, verify_safety
+from planning_core.analysis import build_trajectory, elevation_and_grade, min_turning_radius, summarize, verify_safety
 from planning_core.footprint import footprint_sample_points, path_min_clearance, vehicle_footprint
 from planning_core.planners import (
     elastic_band,
@@ -84,16 +84,6 @@ def _read_raster(path: str):
     with rasterio.open(path) as ds:
         arr = ds.read(1)
         return arr, ds.transform
-
-
-def _drivable_mask(drivable_layer_id: str | None):
-    """drivable レイヤの mask と transform を返す（無ければ (None, None)）。EB/包含チェック共用。"""
-    if not drivable_layer_id:
-        return None, None
-    dl = store.get_layer(drivable_layer_id)
-    if dl and "mask_cog" in dl:
-        return _read_raster(dl["mask_cog"])
-    return None, None
 
 
 def _rasterize_nogo(polygons, transform, shape) -> np.ndarray | None:
@@ -187,6 +177,19 @@ def plan(req: PlanRequest):
     pts = np.array([[p.x, p.y] for p in req.waypoints], dtype=float)
     veh = _vehicle(req.vehicle_id)
     r_min = _r_min(req, veh)
+
+    # リクエスト内キャッシュ: 同一ラスタ(cost/mask/dsm)を複数箇所で使うため1回だけ開く。
+    # 読み出し後の NoGo カーブアウト等は np.where の新配列生成なのでキャッシュは汚れない。
+    _rasters: dict[str, tuple[np.ndarray, object]] = {}
+
+    def _rd(path: str):
+        if path not in _rasters:
+            _rasters[path] = _read_raster(path)
+        return _rasters[path]
+
+    # レイヤ meta もリクエスト内で1回だけ解決（レジストリの多重パースを避ける）。
+    cl = _cost_layer_for(req.costmap_layer_id, req.drivable_layer_id)
+    dl = store.get_layer(req.drivable_layer_id) if req.drivable_layer_id else None
     kappa_rate_max = (veh.kappa_rate_max if (veh and req.limit_steer_rate) else None)
     warn: str | None = None
     measured_r: float = float("inf")
@@ -202,15 +205,12 @@ def plan(req: PlanRequest):
         algo = "hybrid_astar" if (r_min and r_min > 0) else "grid_astar"
 
     if algo in ("grid_astar", "hybrid_astar"):
-        cl = _cost_layer_for(req.costmap_layer_id, req.drivable_layer_id)
         if not cl or "cost_cog" not in cl:
             raise HTTPException(400, "auto/grid_astar needs a costmap layer (costmap_layer_id or via drivable)")
-        cost, transform = _read_raster(cl["cost_cog"])
+        cost, transform = _rd(cl["cost_cog"])
         mask = None
-        if req.drivable_layer_id:
-            dl = store.get_layer(req.drivable_layer_id)
-            if dl and "mask_cog" in dl:
-                mask, _ = _read_raster(dl["mask_cog"])
+        if dl and "mask_cog" in dl:
+            mask, _ = _rd(dl["mask_cog"])
         obstacle = float(cl.get("obstacle_value", 1e9))
 
         # 進入禁止領域(NoGoZone): cost を obstacle に、mask を 0 にカーブアウト（planner が回避）。
@@ -348,16 +348,13 @@ def plan(req: PlanRequest):
         # コスト/領域があれば利用（任意）。footprint は車両＋enforce 時に厳密衝突判定。
         rc = rm = rtf = None
         robstacle = 1e9
-        cl = _cost_layer_for(req.costmap_layer_id, req.drivable_layer_id)
         if cl and "cost_cog" in cl:
-            rc, rtf = _read_raster(cl["cost_cog"])
+            rc, rtf = _rd(cl["cost_cog"])
             robstacle = float(cl.get("obstacle_value", 1e9))
-        if req.drivable_layer_id:
-            dl = store.get_layer(req.drivable_layer_id)
-            if dl and "mask_cog" in dl:
-                rm, mt = _read_raster(dl["mask_cog"])
-                if rtf is None:
-                    rtf = mt
+        if dl and "mask_cog" in dl:
+            rm, mt = _rd(dl["mask_cog"])
+            if rtf is None:
+                rtf = mt
         if rtf is not None and rc is not None:
             burn = _rasterize_nogo(req.no_go_polygons, rtf, rc.shape)
             if burn is not None:
@@ -398,7 +395,7 @@ def plan(req: PlanRequest):
         source = "numeric"
 
     # 走行可能 mask（EB 洗練・フットプリント包含チェックで共用）。NoGoZone もここで除外。
-    dmask, dtransform = _drivable_mask(req.drivable_layer_id)
+    dmask, dtransform = (_rd(dl["mask_cog"]) if (dl and "mask_cog" in dl) else (None, None))
     if dmask is not None:
         dburn = _rasterize_nogo(req.no_go_polygons, dtransform, dmask.shape)
         if dburn is not None:
@@ -443,22 +440,22 @@ def plan(req: PlanRequest):
                     "配置点が車両に対しタイト/コリドーが狭い可能性。"
                 )
 
-    # 縦断勾配（DSM があれば）。失敗は黙って握り潰さず warning に出す（DSM不良とDSM無しを区別）。
+    # 縦断勾配＋標高 z（点群由来 DSM があれば軌跡に埋め込む）。失敗は黙って握り潰さず warning に出す。
     grade = None
-    cl = _cost_layer_for(req.costmap_layer_id, req.drivable_layer_id)
+    zprof = None
     if cl and cl.get("dsm_cog"):
         try:
-            dsm, dsm_t = _read_raster(cl["dsm_cog"])
+            dsm, dsm_t = _rd(cl["dsm_cog"])
             s = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(final[:, 0]), np.diff(final[:, 1])))])
-            grade = grade_profile(final, s, dsm, dsm_t)
+            zprof, grade = elevation_and_grade(final, s, dsm, dsm_t)
         except Exception as e:  # noqa: BLE001
-            grade = None
-            warn = (warn + " / " if warn else "") + f"勾配の計算に失敗（DSM読込/CRS不整合の可能性）: {e}"
+            grade = zprof = None
+            warn = (warn + " / " if warn else "") + f"勾配/標高の計算に失敗（DSM読込/CRS不整合の可能性）: {e}"
 
     # フットプリント包含チェックは上で解決した走行可能 mask（dmask/dtransform）を共用。
     # 後進つきプランナは生 gear を最終経路へマップ（後進の車体方位・cusp 評価を正しく）。
     gears = _nearest_gears(final, raw_gear_pts) if raw_gear_pts else None
-    traj = build_trajectory(final, curvature_source=source, vehicle=veh, grade_pct=grade, gears=gears)
+    traj = build_trajectory(final, curvature_source=source, vehicle=veh, grade_pct=grade, gears=gears, z=zprof)
     result = summarize(traj, vehicle=veh, drivable_mask=dmask, transform=dtransform)
 
     # 安全検証（設計 Stage 5）: 車両包絡線・旋回半径・操舵・勾配・最小離隔を統合し合否＋不可理由を返す。
@@ -486,15 +483,55 @@ def analyze(req: AnalyzeRequest):
     pts = np.array([[p.x, p.y] for p in req.points], dtype=float)
     veh = _vehicle(req.vehicle_id)
     grade = None
+    zprof = None
     cl = _cost_layer_for(req.costmap_layer_id, None)
     if cl and cl.get("dsm_cog"):
         try:
             dsm, dsm_t = _read_raster(cl["dsm_cog"])
             s = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(pts[:, 0]), np.diff(pts[:, 1])))])
-            grade = grade_profile(pts, s, dsm, dsm_t)
+            zprof, grade = elevation_and_grade(pts, s, dsm, dsm_t)
         except (rasterio.errors.RasterioIOError, ValueError, IndexError):
             # DSM 読込失敗/CRS不整合/範囲外は勾配なしで継続（それ以外の想定外は握り潰さず伝播）
-            grade = None
-    traj = build_trajectory(pts, vehicle=veh, grade_pct=grade)
+            grade = zprof = None
+    traj = build_trajectory(pts, vehicle=veh, grade_pct=grade, z=zprof)
     result = summarize(traj, vehicle=veh)
     return {"trajectory": traj.model_dump(), "analysis": result.model_dump()}
+
+
+class ElevationSampleRequest(BaseModel):
+    points: list[XYIn]
+    costmap_layer_id: str | None = None    # 省略時: DSM を持つ最新の cost レイヤ
+    smooth_m: float = Field(8.0, ge=0.0, le=100.0)  # 勾配解析と同じ平滑化窓[m]。0=生サンプル
+
+
+@router.post("/elevation/sample")
+def elevation_sample(req: ElevationSampleRequest):
+    """任意の点列（保存済みルート等）に、点群由来 DSM の標高 z[m] を後付けサンプリングする。
+
+    経路生成時の自動埋め込み（/plan・寄り付き）と同じ双一次補間＋平滑化。DSM 範囲外/欠損は null。
+    """
+    if not req.points:
+        raise HTTPException(400, "need >= 1 point")
+    if req.costmap_layer_id:
+        cl = store.get_layer(req.costmap_layer_id)
+        if not cl or cl.get("kind") != "cost":
+            raise HTTPException(404, f"cost layer not found: {req.costmap_layer_id}")
+    else:
+        cands = [l for l in store.list_layers() if l.get("kind") == "cost" and l.get("dsm_cog")]
+        cl = cands[-1] if cands else None
+    if not cl or not cl.get("dsm_cog"):
+        raise HTTPException(404, "点群由来の DSM を持つコストマップレイヤがありません（先に LAS からコストマップを生成してください）")
+    xy = np.array([[p.x, p.y] for p in req.points], float)
+    dsm, dsm_t = _read_raster(cl["dsm_cog"])
+    if len(xy) >= 2:
+        s = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(xy[:, 0]), np.diff(xy[:, 1])))])
+    else:
+        s = np.zeros(len(xy))
+    z, _ = elevation_and_grade(xy, s, dsm, dsm_t, smooth_m=req.smooth_m)
+    zlist = [(float(v) if np.isfinite(v) else None) for v in z]
+    return {
+        "z": zlist,
+        "layer_id": cl.get("id"),
+        "n": len(zlist),
+        "n_missing": sum(1 for v in zlist if v is None),
+    }

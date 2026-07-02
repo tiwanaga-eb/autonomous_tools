@@ -339,10 +339,15 @@ export function ThreeView() {
     s.points.add(new THREE.Points(geo, new THREE.PointsMaterial({ size: pointSize, vertexColors: true, sizeAttenuation: false })));
   }
 
-  function lineFromXY(pts: XY[], color: number, lift: number) {
+  function lineFromXY(pts: (XY & { z?: number | null })[], color: number, lift: number) {
     if (pts.length < 2) return null;
     const v: number[] = [];
-    for (const p of pts) { const [lx, ly, lz] = toLocal(p.x, p.y, sampleElev(p.x, p.y) + lift); v.push(lx, ly, lz); }
+    for (const p of pts) {
+      // 埋め込み済み標高 z（点群DSM実測）があれば優先。無ければ粗い表示グリッドから補間。
+      const base = p.z ?? sampleElev(p.x, p.y);
+      const [lx, ly, lz] = toLocal(p.x, p.y, base + lift);
+      v.push(lx, ly, lz);
+    }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.Float32BufferAttribute(v, 3));
     return new THREE.Line(geo, new THREE.LineBasicMaterial({ color }));
@@ -410,7 +415,7 @@ export function ThreeView() {
     disposeGroup(s.content);
     areas.forEach((a) => s.content.add(areaGroup(a.points)));
     if (route && route.trajectory.points.length > 1) {
-      const center = route.trajectory.points.map((p) => ({ x: p.x, y: p.y }));
+      const center = route.trajectory.points.map((p) => ({ x: p.x, y: p.y, z: p.z }));
       if (roadWidthM > 0) {
         const band = roadBand(center, roadWidthM / 2);
         if (band) s.content.add(band);
@@ -421,9 +426,12 @@ export function ThreeView() {
     waypoints.forEach((w) => s.content.add(marker(w.xy.x, w.xy.y, w.role === "start" ? 0x22c55e : w.role === "goal" ? 0xef4444 : 0x0ea5e9)));
     if (spotResult && spotResult.points.length > 1) {
       let runStart = 0; const pts = spotResult.points;
+      // 寄り付きの標高は解析軌跡（同一点列から構築＝index 対応）の z を使う
+      const tz = spotResult.trajectory?.points?.length === pts.length ? spotResult.trajectory.points : null;
       for (let i = 1; i <= pts.length; i++) {
         if (i === pts.length || pts[i].gear !== pts[runStart].gear) {
-          const l = lineFromXY(pts.slice(runStart, i).map((p) => ({ x: p.x, y: p.y })), pts[runStart].gear === "R" ? 0xf97316 : 0x22d3ee, 1.0);
+          const seg = pts.slice(runStart, i).map((p, k) => ({ x: p.x, y: p.y, z: tz?.[runStart + k]?.z }));
+          const l = lineFromXY(seg, pts[runStart].gear === "R" ? 0xf97316 : 0x22d3ee, 1.0);
           if (l) s.content.add(l); runStart = i;
         }
       }
