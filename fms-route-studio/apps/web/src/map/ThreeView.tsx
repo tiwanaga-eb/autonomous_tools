@@ -169,6 +169,8 @@ export function ThreeView() {
       dom.removeEventListener("pointerdown", onDown);
       dom.removeEventListener("pointermove", onMove);
       dom.removeEventListener("pointerup", onUp);
+      // 各グループの geometry/material を最終破棄（アンマウント時の GPU メモリリーク防止）。
+      disposeGroup(s.terrain); disposeGroup(s.points); disposeGroup(s.content); disposeGroup(s.edit);
       controls.dispose(); renderer.dispose();
       if (renderer.domElement.parentElement === el) el.removeChild(renderer.domElement);
       st.current = null;
@@ -452,10 +454,11 @@ export function ThreeView() {
   useEffect(() => {
     const s = st.current; if (!s) return;
     let cancelled = false;
+    const ac = new AbortController();
     (async () => {
       const [grid, pts] = await Promise.all([
-        costLayer ? api.dsmGrid(costLayer.id, 240).catch(() => null) : Promise.resolve(null),
-        lasLayer ? api.layerPoints(lasLayer.id, 200000).catch(() => null) : Promise.resolve(null),
+        costLayer ? api.dsmGrid(costLayer.id, 240, ac.signal).catch(() => null) : Promise.resolve(null),
+        lasLayer ? api.layerPoints(lasLayer.id, 200000, ac.signal).catch(() => null) : Promise.resolve(null),
       ]);
       if (cancelled || !st.current) return;
       s.grid = grid; s.pts = pts;
@@ -471,7 +474,7 @@ export function ThreeView() {
       buildTerrain(); buildPoints(); rebuildContent(); rebuildEdit(); applyVExag(); applyPointSize(); applyMode(); fitCamera();
       if (mode3d === "points" && !pts) setStatus("3D点群: LASレイヤがありません（地形メッシュに切替可）");
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; ac.abort(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [costLayer?.id, lasLayer?.id]);
 

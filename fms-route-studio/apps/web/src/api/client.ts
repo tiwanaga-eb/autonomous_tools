@@ -8,41 +8,62 @@ import type {
   XY,
 } from "@/types/api";
 
-async function jget<T>(url: string): Promise<T> {
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-  return (await r.json()) as T;
+// API エラー。FastAPI の {detail: ...} を人間可読メッセージへ整形し、status/detail も保持する。
+export class ApiError extends Error {
+  readonly status: number;
+  readonly detail: unknown;
+  constructor(status: number, message: string, detail: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
 }
 
-async function jpost<T>(url: string, body: unknown): Promise<T> {
-  const r = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-  return (await r.json()) as T;
+async function toApiError(r: Response): Promise<ApiError> {
+  const raw = await r.text().catch(() => "");
+  let detail: unknown = raw;
+  let msg = raw;
+  try {
+    const j = JSON.parse(raw);
+    if (j && typeof j === "object" && "detail" in j) {
+      detail = (j as { detail: unknown }).detail;
+      if (typeof detail === "string") msg = detail;
+      else if (Array.isArray(detail))
+        msg = detail.map((d) => (d && typeof d === "object" && "msg" in d ? String((d as { msg: unknown }).msg) : JSON.stringify(d))).join("; ");
+      else msg = JSON.stringify(detail);
+    }
+  } catch {
+    /* not JSON — raw text のまま */
+  }
+  return new ApiError(r.status, msg || `HTTP ${r.status}`, detail);
 }
 
-async function jpatch<T>(url: string, body: unknown): Promise<T> {
-  const r = await fetch(url, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-  return (await r.json()) as T;
+interface ReqOpts {
+  body?: unknown;
+  signal?: AbortSignal;
 }
 
-async function jput<T>(url: string, body: unknown): Promise<T> {
-  const r = await fetch(url, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-  return (await r.json()) as T;
+// 全 JSON リクエストの単一入口。r.ok 検査・detail 整形・空ボディ(204)・abort を一元化。
+async function request<T>(method: string, url: string, opts: ReqOpts = {}): Promise<T> {
+  const init: RequestInit = { method, signal: opts.signal };
+  if (opts.body !== undefined) {
+    init.headers = { "Content-Type": "application/json" };
+    init.body = JSON.stringify(opts.body);
+  }
+  const r = await fetch(url, init);
+  if (!r.ok) throw await toApiError(r);
+  if (r.status === 204) return undefined as T;
+  const text = await r.text();
+  return (text ? JSON.parse(text) : undefined) as T;
 }
+
+const jget = <T>(url: string, signal?: AbortSignal): Promise<T> => request<T>("GET", url, { signal });
+const jpost = <T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> =>
+  request<T>("POST", url, { body, signal });
+const jpatch = <T>(url: string, body: unknown): Promise<T> => request<T>("PATCH", url, { body });
+const jput = <T>(url: string, body: unknown): Promise<T> => request<T>("PUT", url, { body });
+const jdelete = (url: string): Promise<void> => request<void>("DELETE", url);
 
 export interface DrivableParams {
   threshold: number;
@@ -108,11 +129,11 @@ export const api = {
     const fd = new FormData();
     fd.append("file", file);
     const r = await fetch(`/api/layers/${kind}`, { method: "POST", body: fd });
-    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    if (!r.ok) throw await toApiError(r);
     return (await r.json()) as Layer;
   },
 
-  deleteLayer: (id: string) => fetch(`/api/layers/${id}`, { method: "DELETE" }),
+  deleteLayer: (id: string) => jdelete(`/api/layers/${id}`),
 
   tileUrlTemplate: (id: string) => `/api/tiles/${id}/{z}/{x}/{y}.png`,
   previewUrl: (id: string) => `/api/layers/${id}/preview.png`,
@@ -125,9 +146,8 @@ export const api = {
   editDrivable: (id: string, op: "include" | "exclude", polygon: [number, number][]) =>
     jpatch<Layer>(`/api/drivable/${id}`, { op, polygon }),
   deleteDrivableEdit: (id: string, index: number) =>
-    fetch(`/api/drivable/${id}/edits/${index}`, { method: "DELETE" }).then((r) => r.json() as Promise<Layer>),
-  clearDrivableEdits: (id: string) =>
-    fetch(`/api/drivable/${id}/edits`, { method: "DELETE" }).then((r) => r.json() as Promise<Layer>),
+    request<Layer>("DELETE", `/api/drivable/${id}/edits/${index}`),
+  clearDrivableEdits: (id: string) => request<Layer>("DELETE", `/api/drivable/${id}/edits`),
 
   transform: (points: [number, number][], srcEpsg: number, dstEpsg: number) =>
     jpost<{ points: [number, number][] }>("/api/geo/transform", {
@@ -159,19 +179,19 @@ export const api = {
     }>(`/api/vehicles/${id}/detail`),
   saveVehicleOverride: (id: string, fields: Record<string, number>) =>
     jput<{ effective: Record<string, unknown>; override: Record<string, number> }>(`/api/vehicles/${id}`, { fields }),
-  resetVehicleOverride: (id: string) => fetch(`/api/vehicles/${id}/override`, { method: "DELETE" }),
+  resetVehicleOverride: (id: string) => jdelete(`/api/vehicles/${id}/override`),
 
-  layerPoints: (lasLayerId: string, maxPoints = 200000) =>
+  layerPoints: (lasLayerId: string, maxPoints = 200000, signal?: AbortSignal) =>
     jget<{
       n: number; x: number[]; y: number[]; z: number[];
       has_rgb: boolean; rgb: number[][] | null; zmin: number; zmax: number;
-    }>(`/api/layers/${lasLayerId}/points?max_points=${maxPoints}`),
+    }>(`/api/layers/${lasLayerId}/points?max_points=${maxPoints}`, signal),
 
-  dsmGrid: (costLayerId: string, maxSize = 160) =>
+  dsmGrid: (costLayerId: string, maxSize = 160, signal?: AbortSignal) =>
     jget<{
       nx: number; ny: number; x0: number; y0: number; dx: number; dy: number;
       z: (number | null)[][]; zmin: number; zmax: number;
-    }>(`/api/costmap/${costLayerId}/dsm_grid?max_size=${maxSize}`),
+    }>(`/api/costmap/${costLayerId}/dsm_grid?max_size=${maxSize}`, signal),
 
   listProjects: () => jget<{ id: string; name: string; updated_at: string | null }[]>("/api/projects"),
   getProject: (id: string) => jget<{ id: string; name: string; state: Record<string, unknown> }>(`/api/projects/${id}`),
@@ -179,7 +199,7 @@ export const api = {
     jpost<{ id: string; name: string }>("/api/projects", { name, state, updated_at: new Date().toISOString() }),
   updateProject: (id: string, name: string, state: Record<string, unknown>) =>
     jput<{ id: string; name: string }>(`/api/projects/${id}`, { name, state, updated_at: new Date().toISOString() }),
-  deleteProject: (id: string) => fetch(`/api/projects/${id}`, { method: "DELETE" }),
+  deleteProject: (id: string) => jdelete(`/api/projects/${id}`),
 
   simulateSpotting: (body: {
     start: { x: number; y: number; heading_deg: number };

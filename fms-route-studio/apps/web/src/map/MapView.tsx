@@ -644,6 +644,11 @@ export function MapView() {
       viewport.removeEventListener("pointerup", onPointerUp);
       viewport.removeEventListener("pointerleave", onPointerLeave);
       viewport.removeEventListener("contextmenu", onCtxMenu);
+      // COG レイヤの source(worker/decoder) と layer を破棄してからマップを解放（リーク防止）。
+      for (const [, ent] of rasterLayersRef.current) {
+        (ent.layer.getSource() as GeoTIFF | null)?.dispose();
+        ent.layer.dispose();
+      }
       map.setTarget(undefined);
       mapRef.current = null;
       viewSetRef.current = false;
@@ -666,11 +671,13 @@ export function MapView() {
     );
     const wantedIds = new Set(wanted.map((l) => l.id));
 
-    // 不要 or version変更 のレイヤを除去
+    // 不要 or version変更 のレイヤを除去（GeoTIFF source と WebGLTileLayer も dispose し GPU/worker リークを防ぐ）
     for (const [id, ent] of existing) {
       const l = layers.find((x) => x.id === id);
       if (!wantedIds.has(id) || (l && (l.version ?? 1) !== ent.version)) {
         map.removeLayer(ent.layer);
+        (ent.layer.getSource() as GeoTIFF | null)?.dispose();
+        ent.layer.dispose();
         existing.delete(id);
       }
     }

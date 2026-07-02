@@ -60,3 +60,21 @@ def test_skid_min_radius_not_applicable():
     rep = verify_safety(_traj(), _an(min_r=1.0), skid, clearance_m=2.0)
     mr = next(c for c in rep.checks if c.name == "min_radius")
     assert not mr.applicable and rep.passed  # 半径は評価対象外なので合否に影響しない
+
+
+def test_fail_closed_when_no_vehicle_and_no_drivable():
+    # 車両未指定 ＋ 走行可能領域未評価 → 実評価チェックが皆無 → fail-closed で passed=False
+    rep = verify_safety(_traj(), _an(), None, clearance_m=None, footprint_evaluated=False)
+    assert not rep.passed
+    assert any("情報が不足" in r for r in rep.reasons)
+    fp = next(c for c in rep.checks if c.name == "footprint")
+    assert not fp.applicable  # 包絡線は評価不可扱い
+
+
+def test_footprint_not_evaluated_marked_non_applicable():
+    # 車両はあるが走行可能領域なし → 包絡線は非適用、運動学チェックのみで合否
+    rep = verify_safety(_traj(), _an(), _veh(), clearance_m=None, footprint_evaluated=False)
+    fp = next(c for c in rep.checks if c.name == "footprint")
+    assert not fp.applicable
+    # min_radius/kappa_rate/grade が適用され、違反なしなので合格
+    assert rep.passed

@@ -27,11 +27,19 @@ def verify_safety(
     *,
     clearance_m: float | None = None,
     advisory_kinds: tuple[str, ...] = (),
+    footprint_evaluated: bool = True,
 ) -> SafetyReport:
     """軌跡＋解析＋車両から安全検証レポートを作る。clearance_m は経路に沿う実測最小離隔[m]。
 
     advisory_kinds: 参考扱いにするチェック名（合否に影響させない）。例: 寄り付き等の低速
     マニューバでは操舵レート dκ/ds は速度が低く非拘束なので "kappa_rate" を参考扱いにする。
+
+    footprint_evaluated: 走行可能領域 mask を与えて車両包絡線/離隔を実評価したか。False の場合は
+    包絡線チェックを「評価不可（applicable=False）」として扱い、安全側（fail-closed）に倒す。
+
+    **fail-closed 方針**: 実評価できたチェックが 1 つも無い（車両未指定・走行可能領域なし等で
+    包絡線も運動学も評価できない）場合は、安易に passed=True とせず passed=False を返す。
+    安全判定はルール/幾何/物理で固定し、情報不足を「合格」と誤認させない（設計の根幹）。
     """
     vios = analysis.violations
     checks: list[SafetyCheck] = []
@@ -45,11 +53,13 @@ def verify_safety(
 
     skid = vehicle is not None and vehicle.kinematic_type == "tracked_skid"
 
-    # 車両包絡線（実車体が走行可能領域に収まるか）
+    # 車両包絡線（実車体が走行可能領域に収まるか）。走行可能領域 mask 未供給なら評価不可。
     checks.append(SafetyCheck(
         name="footprint", label="車両包絡線（走行可能領域内）",
-        ok=not has("footprint"), measured=worst("footprint"), limit=0.0,
-        detail="車体矩形がはみ出す区間あり" if has("footprint") else "車体は領域内",
+        ok=not has("footprint"), applicable=footprint_evaluated,
+        measured=worst("footprint"), limit=0.0,
+        detail=("走行可能領域 未供給で評価不可" if not footprint_evaluated
+                else ("車体矩形がはみ出す区間あり" if has("footprint") else "車体は領域内")),
     ))
 
     # 最小旋回半径
@@ -110,5 +120,13 @@ def verify_safety(
         if c.applicable and not c.ok:
             reasons.append(f"{c.label}: 不適合（実測 {_fmt(c.measured, units.get(c.name, ''))} / 限界 {_fmt(c.limit, units.get(c.name, ''))}）")
 
-    passed = all(c.ok for c in checks if c.applicable)
+    # fail-closed: 実評価できた（applicable な）チェックが皆無なら「合格」にしない。
+    applicable_checks = [c for c in checks if c.applicable]
+    if not applicable_checks:
+        reasons.append(
+            "安全検証に必要な情報が不足（車両・走行可能領域が未指定のため配信可否を判定できません）"
+        )
+        return SafetyReport(passed=False, checks=checks, reasons=reasons)
+
+    passed = all(c.ok for c in applicable_checks)
     return SafetyReport(passed=passed, checks=checks, reasons=reasons)

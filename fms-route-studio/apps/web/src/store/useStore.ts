@@ -191,13 +191,18 @@ export interface AppState extends Snapshot {
 
 const MAX_HISTORY = 50;
 
+// 履歴へ積む際は編集対象を「深く」複製する。これにより、コマンドが万一 in-place で
+// 要素オブジェクト（Waypoint.xy 等）を書き換えても、過去スナップショットが汚染されない。
+const clone = <T>(v: T): T =>
+  typeof structuredClone === "function" ? structuredClone(v) : (JSON.parse(JSON.stringify(v)) as T);
+
 function snap(s: Snapshot): Snapshot {
   return {
-    waypoints: s.waypoints,
-    route: s.route,
-    areas: s.areas,
-    activePolygon: s.activePolygon,
-    importedRoutes: s.importedRoutes,
+    waypoints: clone(s.waypoints),
+    route: clone(s.route),
+    areas: clone(s.areas),
+    activePolygon: clone(s.activePolygon),
+    importedRoutes: clone(s.importedRoutes),
     selectedId: s.selectedId,
   };
 }

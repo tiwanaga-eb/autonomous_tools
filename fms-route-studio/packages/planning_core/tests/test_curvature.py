@@ -26,3 +26,15 @@ def test_circumradius_right_triangle():
     # 直角三角形: 斜辺が直径 -> 外接半径 = 斜辺/2
     r = circumradius([0.0, 0.0], [2.0, 0.0], [0.0, 2.0])
     assert abs(r - np.hypot(2.0, 2.0) / 2.0) < 1e-9
+
+
+def test_min_turning_radius_excludes_cusp():
+    """後進を伴う切り返し経路: cusp を除外しないと見かけの半径が極小に化ける。"""
+    from planning_core.analysis.curvature import cusp_mask
+
+    fwd = np.column_stack([np.linspace(0.0, 6.0, 7), np.zeros(7)])           # +x 直進
+    rev = np.column_stack([np.linspace(6.0, 0.0, 7)[1:], np.full(6, 0.02)])  # -x 直進（微小オフセット）
+    pts = np.vstack([fwd, rev])
+    assert cusp_mask(pts).any()  # 反転点を検出している
+    # cusp を除外すれば直線同士なので最小旋回半径は非常に大きい（ほぼ∞）
+    assert min_turning_radius(pts) > 100.0

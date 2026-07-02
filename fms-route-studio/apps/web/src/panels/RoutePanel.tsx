@@ -7,6 +7,7 @@ import { pickLayer } from "@/layerSelect";
 import { useStore } from "@/store/useStore";
 import type { EditMode } from "@/store/useStore";
 import type { Vehicle } from "@/types/api";
+import { errMessage, runBusy } from "@/ui/busy";
 
 const MODES: { mode: EditMode; label: string }[] = [
   { mode: "start", label: "Start" },
@@ -94,20 +95,22 @@ export function RoutePanel() {
       setStatus("分岐元の保存経路を選んでください（2点以上）", "warn");
       return;
     }
-    try {
-      const j = await api.fleetJunction(pts, branchFrac);
-      useStore.getState().setWaypoints([
-        { id: crypto.randomUUID(), role: "start", xy: { x: j.x, y: j.y }, heading_deg: j.heading_deg },
-      ]);
-      dispatch({ type: "SET_ROUTE", route: null });
-      setStatus(
-        `分岐起点を設定：${sr.name} の ${Math.round(branchFrac * 100)}% / 方位 ${j.heading_deg.toFixed(0)}°。` +
-        "地図でゴールを追加→経路生成→「現在の経路を保存」でライブラリ（複数台）へ。",
-        "success",
-      );
-    } catch (e) {
-      setStatus(`分岐起点の取得に失敗: ${String(e)}`, "error");
-    }
+    await runBusy(
+      "分岐起点を計算中…",
+      async () => {
+        const j = await api.fleetJunction(pts, branchFrac);
+        useStore.getState().setWaypoints([
+          { id: crypto.randomUUID(), role: "start", xy: { x: j.x, y: j.y }, heading_deg: j.heading_deg },
+        ]);
+        dispatch({ type: "SET_ROUTE", route: null });
+        setStatus(
+          `分岐起点を設定：${sr.name} の ${Math.round(branchFrac * 100)}% / 方位 ${j.heading_deg.toFixed(0)}°。` +
+          "地図でゴールを追加→経路生成→「現在の経路を保存」でライブラリ（複数台）へ。",
+          "success",
+        );
+      },
+      { failPrefix: "分岐起点の取得に失敗" },
+    );
   }
 
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
@@ -163,7 +166,7 @@ export function RoutePanel() {
         res.warning || (res.safety && !res.safety.passed) ? "warn" : "success",
       );
     } catch (e) {
-      setStatus(`経路生成に失敗: ${String(e)}`, "error");
+      setStatus(`経路生成に失敗: ${errMessage(e)}`, "error");
     } finally {
       useStore.getState().setBusy(false);
     }

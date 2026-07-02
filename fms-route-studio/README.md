@@ -32,8 +32,18 @@ fms-route-studio/
 │   └── app/routers/   layers / costmap / drivable / geo(経路生成・解析) / simulate / fleet / vehicles / projects / agent（+ /api 直下に plan/tiles）
 ├── apps/web/                 # React+TS+Vite+Zustand（:5173）OpenLayers native 6677 + three.js 3D
 ├── scripts/scenario_report.py
-└── docs/SCENARIO_REPORT.md   # 鉱山/土木シナリオの自動チューニングレポート
+└── docs/                     # 要件定義書 / 設計書 / シナリオレポート（docs/README.md 参照）
 ```
+
+## ドキュメント
+
+| 文書 | 内容 |
+|---|---|
+| [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) | 要件定義書（StRS/SLQDC・SysRS/F·P·I·S·R・トレーサビリティ） |
+| [docs/DESIGN.md](docs/DESIGN.md) | 設計書（アーキテクチャ・アルゴリズム・API・データモデル・非機能） |
+| [docs/SCENARIO_REPORT.md](docs/SCENARIO_REPORT.md) | 鉱山/土木シナリオの自動チューニングレポート |
+
+要件定義は `unmanned-requirements` のメソドロジー（SLQDC / F·P·I·S·R / トレーサビリティ）に準拠し、ID は `FRS-` 接頭辞で採番、上位パッケージ AutonomousDumptruck（FMS 運航前工程 S-00）へトレースする。
 
 ## 主な機能
 

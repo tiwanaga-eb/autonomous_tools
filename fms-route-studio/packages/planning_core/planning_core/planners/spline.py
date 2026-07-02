@@ -167,6 +167,10 @@ def fit_spline_curvature_limited(
         s = 1.0 if s == 0.0 else s * 3.0
         if s > s_max:
             break
+    if best is None:
+        # 候補が1つも得られなかった（iters<=0 等の異常入力）。None のアンパックによる
+        # 不可解な TypeError を避け、呼び出し側が扱える明示的なエラーにする。
+        raise ValueError("spline fitting produced no candidate (invalid iters or degenerate input)")
     curve, s_used, rcur, dkmax = best
     warn = (
         f"could not fully satisfy R>={rmin:.1f}m / dκ/ds<={kappa_rate_max} "

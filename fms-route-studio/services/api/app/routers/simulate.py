@@ -254,7 +254,8 @@ def _attach_analysis(out: dict, res, veh, dsm, dsm_t, dmask, dtransform, min_spe
         try:
             s = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(xy[:, 0]), np.diff(xy[:, 1])))])
             grade = grade_profile(xy, s, dsm, dsm_t)
-        except Exception:  # noqa: BLE001
+        except (rasterio.errors.RasterioIOError, ValueError, IndexError):
+            # DSM 読込失敗/CRS不整合/範囲外は勾配なしで継続（想定外は伝播させる）
             grade = None
     traj = build_trajectory(xy, vehicle=veh, grade_pct=grade, gears=gears, min_speed_mps=min_speed_mps)
     result = summarize(traj, vehicle=veh, drivable_mask=dmask, transform=dtransform)
@@ -265,7 +266,10 @@ def _attach_analysis(out: dict, res, veh, dsm, dsm_t, dmask, dtransform, min_spe
         except Exception:  # noqa: BLE001
             clearance_m = None
     # 寄り付きは低速マニューバのため dκ/ds(操舵レート)は非拘束 → 参考扱い（合否に効かせない）。
-    safety = verify_safety(traj, result, veh, clearance_m=clearance_m, advisory_kinds=("kappa_rate",))
+    safety = verify_safety(
+        traj, result, veh, clearance_m=clearance_m, advisory_kinds=("kappa_rate",),
+        footprint_evaluated=dmask is not None,
+    )
     out["trajectory"] = traj.model_dump()
     out["analysis"] = result.model_dump()
     out["safety"] = safety.model_dump()

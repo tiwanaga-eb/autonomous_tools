@@ -465,7 +465,7 @@ def plan(req: PlanRequest):
     clearance_m = None
     if dmask is not None:
         clearance_m, _ = path_min_clearance(final, dmask, dtransform)
-    safety = verify_safety(traj, result, veh, clearance_m=clearance_m)
+    safety = verify_safety(traj, result, veh, clearance_m=clearance_m, footprint_evaluated=dmask is not None)
 
     return {
         "trajectory": traj.model_dump(),
@@ -492,7 +492,8 @@ def analyze(req: AnalyzeRequest):
             dsm, dsm_t = _read_raster(cl["dsm_cog"])
             s = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(pts[:, 0]), np.diff(pts[:, 1])))])
             grade = grade_profile(pts, s, dsm, dsm_t)
-        except Exception:
+        except (rasterio.errors.RasterioIOError, ValueError, IndexError):
+            # DSM 読込失敗/CRS不整合/範囲外は勾配なしで継続（それ以外の想定外は握り潰さず伝播）
             grade = None
     traj = build_trajectory(pts, vehicle=veh, grade_pct=grade)
     result = summarize(traj, vehicle=veh)

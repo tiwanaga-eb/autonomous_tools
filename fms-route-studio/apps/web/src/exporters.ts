@@ -24,7 +24,7 @@ async function toLngLat(pts: XY[]): Promise<[number, number][]> {
   return out.points as [number, number][]; // [lng, lat]
 }
 
-function csv(rows: (string | number | null)[][]): string {
+export function csv(rows: (string | number | null)[][]): string {
   return rows
     .map((r) => r.map((v) => (v === null || v === undefined ? "" : String(v))).join(","))
     .join("\n");
@@ -70,7 +70,7 @@ export async function exportRouteGeoJson(): Promise<boolean> {
 }
 
 // ---- 保存ルートの一括エクスポート（プロジェクトの全ルート。元の名前を引き継ぐ） ----
-function sanitizeFilename(name: string): string {
+export function sanitizeFilename(name: string): string {
   return (name || "route").replace(/[\\/:*?"<>|]/g, "_").trim() || "route";
 }
 
