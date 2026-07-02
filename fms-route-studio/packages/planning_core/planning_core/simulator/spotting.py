@@ -57,6 +57,7 @@ class SpottingResult:
     total_turn_rad: float = 0.0
     score: float = float("inf")
     approach_error_m: float = 0.0
+    approach_error_deg: float | None = None  # 目標方位との差[°]（絶対値, 0..180。tyaw 供給時のみ）
     feasible: bool = False
     status: str = "NO_PATH"
     footprint_inside: bool | None = None   # 車体フットプリントが全姿勢でエリア内か（None=未評価）
@@ -329,7 +330,7 @@ def _footprint_scan(states, fp_samp, fp_inv, mask, ignore_ends_m):
 
 
 def _build(segments, speed_fwd, speed_rev, transform, mask, dt, cost, obstacle_value, cmax, footprint, tx, ty,
-           fp_samp=None, fp_inv=None, ignore_ends_m=0.0):
+           fp_samp=None, fp_inv=None, ignore_ends_m=0.0, tyaw=None):
     """segments=[(pts, gear), ...] → SpottingResult（メトリクス・コスト積分・クリアランス算出）。
 
     fp_samp/fp_inv（車体サンプル点＋逆アフィン）を与えると **向き付きフットプリントの包含**を
@@ -408,6 +409,11 @@ def _build(segments, speed_fwd, speed_rev, transform, mask, dt, cost, obstacle_v
         for i in range(n)
     ]
 
+    # 到達方位誤差[°]（目標 yaw が与えられた場合のみ。P-008「一発到達精度 ±0.5m/±5°」の方位側）
+    err_deg = None
+    if tyaw is not None and states:
+        d = (states[-1]["heading_deg"] - math.degrees(tyaw)) % 360.0
+        err_deg = float(min(d, 360.0 - d))
     res = SpottingResult(
         points=states, switch_points=switch_points,
         length_total=length_fwd + length_rev, length_fwd=length_fwd, length_rev=length_rev,
@@ -416,6 +422,7 @@ def _build(segments, speed_fwd, speed_rev, transform, mask, dt, cost, obstacle_v
         cost_integral=cost_integral,
         total_turn_rad=total_turn,
         approach_error_m=float(np.hypot(states[-1]["x"] - tx, states[-1]["y"] - ty)) if states else 1e9,
+        approach_error_deg=err_deg,
     )
     # フットプリント包含（向き付き）が使えるならそれをハード制約に。狭窄エリアで切り返し点を
     # 含む全姿勢の車体がエリア内に収まるかを厳密判定する（ユーザー要件）。
@@ -680,7 +687,7 @@ def plan_spotting(
     def ev(segments):
         return _build(segments, speed_fwd, speed_rev, transform, drivable_mask, dt, cost, obstacle_value,
                       cmax, footprint_radius, tx, ty, fp_samp=fp_samp, fp_inv=fp_inv,
-                      ignore_ends_m=footprint_ignore_ends_m)
+                      ignore_ends_m=footprint_ignore_ends_m, tyaw=tyaw)
 
     cands: list[SpottingResult] = []
     allow_switch = (max_switchbacks is None) or (max_switchbacks >= 1)

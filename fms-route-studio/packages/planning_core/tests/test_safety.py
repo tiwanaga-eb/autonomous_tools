@@ -78,3 +78,26 @@ def test_footprint_not_evaluated_marked_non_applicable():
     assert not fp.applicable
     # min_radius/kappa_rate/grade が適用され、違反なしなので合格
     assert rep.passed
+
+
+def test_approach_accuracy_within_tolerance_passes():
+    # P-008: 水平±0.5m・方位±5° 以内なら到達精度チェックは合格
+    rep = verify_safety(_traj(), _an(), _veh(), clearance_m=2.0,
+                        approach_error_m=0.3, approach_error_deg=3.0)
+    pos = next(c for c in rep.checks if c.name == "approach_pos")
+    yaw = next(c for c in rep.checks if c.name == "approach_yaw")
+    assert pos.ok and yaw.ok and rep.passed
+
+
+def test_approach_accuracy_exceeded_fails_with_reason():
+    rep = verify_safety(_traj(), _an(), _veh(), clearance_m=2.0,
+                        approach_error_m=0.8, approach_error_deg=9.0)
+    pos = next(c for c in rep.checks if c.name == "approach_pos")
+    yaw = next(c for c in rep.checks if c.name == "approach_yaw")
+    assert not pos.ok and not yaw.ok and not rep.passed
+    assert any("到達精度" in r for r in rep.reasons)
+
+
+def test_approach_accuracy_not_supplied_not_checked():
+    rep = verify_safety(_traj(), _an(), _veh(), clearance_m=2.0)
+    assert not any(c.name.startswith("approach_") for c in rep.checks)

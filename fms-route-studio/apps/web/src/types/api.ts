@@ -168,6 +168,7 @@ export interface SpotMetrics {
   n_switchbacks: number;
   min_clearance_m: number | null;
   approach_error_m: number;
+  approach_error_deg?: number | null; // 目標方位との到達誤差[°]（P-008 合否は safety 側）
   cost_integral: number;
   score: number;
   footprint_inside?: boolean | null;

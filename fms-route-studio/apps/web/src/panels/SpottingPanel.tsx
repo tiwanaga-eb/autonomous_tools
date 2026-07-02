@@ -404,7 +404,8 @@ export function SpottingPanel() {
             <li><span>最小クリアランス</span><b>{spotResult.metrics.min_clearance_m ?? "—"} m</b></li>
             <li><span>コスト積分</span><b>{spotResult.metrics.cost_integral}</b></li>
             <li><span>score</span><b>{spotResult.metrics.score}</b></li>
-            <li><span>寄り付き誤差</span><b>{spotResult.metrics.approach_error_m} m</b></li>
+            <li><span>寄り付き誤差</span><b>{spotResult.metrics.approach_error_m} m
+              {spotResult.metrics.approach_error_deg != null ? ` / ${spotResult.metrics.approach_error_deg}°` : ""}</b></li>
             <li><span>feasible</span><b className={spotResult.feasible ? "ok" : "bad"}>{spotResult.feasible ? "OK" : "NG"}</b></li>
           </ul>
           {spotResult.reason && (

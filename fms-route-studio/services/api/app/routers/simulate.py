@@ -267,9 +267,13 @@ def _attach_analysis(out: dict, res, veh, dsm, dsm_t, dmask, dtransform, min_spe
         except Exception:  # noqa: BLE001
             clearance_m = None
     # 寄り付きは低速マニューバのため dκ/ds(操舵レート)は非拘束 → 参考扱い（合否に効かせない）。
+    # 一発到達精度（P-008: 水平±0.5m・方位±5°）も合否チェックに含める。
+    err_m = getattr(res, "approach_error_m", None)
     safety = verify_safety(
         traj, result, veh, clearance_m=clearance_m, advisory_kinds=("kappa_rate",),
         footprint_evaluated=dmask is not None,
+        approach_error_m=(err_m if err_m is not None and math.isfinite(err_m) else None),
+        approach_error_deg=getattr(res, "approach_error_deg", None),
     )
     out["trajectory"] = traj.model_dump()
     out["analysis"] = result.model_dump()
@@ -319,6 +323,7 @@ def _result_dict(res, rho: float, footprint: float) -> dict:
             "n_switchbacks": res.n_switchbacks,
             "min_clearance_m": _fin(res.min_clearance_m, 2),
             "approach_error_m": _fin(res.approach_error_m, 3),
+            "approach_error_deg": _fin(getattr(res, "approach_error_deg", None), 2),
             "cost_integral": _fin(res.cost_integral, 2),
             "score": _fin(res.score, 2),
             "footprint_inside": res.footprint_inside,

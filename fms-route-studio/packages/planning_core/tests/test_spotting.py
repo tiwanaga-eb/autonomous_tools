@@ -26,6 +26,8 @@ def test_spotting_forward_only_reaches_target():
     assert all(p["gear"] == "F" for p in res.points)
     assert res.approach_error_m < 0.5
     assert res.length_total > 0 and res.time_total > 0
+    # 一発到達精度の方位側（P-008 ±5° 判定の入力）も算出される
+    assert res.approach_error_deg is not None and res.approach_error_deg < 5.0
 
 
 def test_spotting_with_switchback_reaches_target():
