@@ -23,6 +23,7 @@ from planning_core.simulator import CostWeights, plan_spotting
 
 from .. import store
 from .. import vehicle_overrides
+from ..rasters import same_grid
 
 router = APIRouter(prefix="/api/simulate", tags=["simulate"])
 
@@ -164,8 +165,9 @@ def spotting(req: SpottingRequest):
             mask = rfeat.rasterize([(geom, 1)], out_shape=(h, w), transform=transform, fill=0, dtype="uint8")
 
     # 防御: mask と cost は同一グリッド前提（hybrid A* 等が同じ transform で両者を参照する）。
-    # グリッドが食い違う場合は形状不一致(500)や誤参照を避けるため cost を無効化（封じ込めは維持）。
-    if mask is not None and cost is not None and cost.shape != mask.shape:
+    # shape に加え transform も照合（同サイズでも別ゾーン/別範囲なら誤参照になる）。
+    # 食い違う場合は cost を無効化して安全側で継続（封じ込め・mask 制約は維持）。
+    if mask is not None and cost is not None and not same_grid(transform, mask.shape, ctransform, cost.shape):
         cost = None
         obstacle = 1e9
 

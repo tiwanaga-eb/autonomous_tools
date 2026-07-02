@@ -728,11 +728,11 @@ def test_layer_upload_preview_and_tile():
     assert client.delete(f"/api/layers/{lid}").status_code == 200
 
 
-def _make_las(path):
-    xs = np.linspace(30000.0, 30050.0, 60)
-    ys = np.linspace(119000.0, 119040.0, 50)
+def _make_las(path, x0=30000.0, y0=119000.0):
+    xs = np.linspace(x0, x0 + 50.0, 60)
+    ys = np.linspace(y0, y0 + 40.0, 50)
     X, Y = np.meshgrid(xs, ys)
-    Z = 0.1 * (X - 30000.0)
+    Z = 0.1 * (X - x0)
     x, y, z = X.ravel(), Y.ravel(), Z.ravel()
     h = laspy.LasHeader(point_format=3, version="1.4")
     h.offsets = [x.min(), y.min(), z.min()]
@@ -740,6 +740,43 @@ def _make_las(path):
     las = laspy.LasData(h)
     las.x, las.y, las.z = x, y, z
     las.write(str(path))
+
+
+def test_plan_rejects_misregistered_layers(tmp_path):
+    """B3: costmap A と、別位置の costmap B から生成した drivable の組合せは
+    shape が同じでも transform が違う → co-registration 検証で 422 になる。"""
+    pa, pb = tmp_path / "a.las", tmp_path / "b.las"
+    _make_las(pa)
+    _make_las(pb, x0=40000.0, y0=120000.0)  # 同サイズ・別位置
+    ids = []
+    for p in (pa, pb):
+        with open(p, "rb") as f:
+            las_id = client.post("/api/layers/las", files={"file": (p.name, f, "application/octet-stream")}).json()["id"]
+        cost_id = client.post(
+            "/api/costmap",
+            json={"las_layer_id": las_id, "src_epsg": 6677, "target_epsg": 6677, "params": {"grid_size_m": 1.0}},
+        ).json()["id"]
+        ids.append((las_id, cost_id))
+    dv_b = client.post(
+        "/api/drivable",
+        json={"cost_layer_id": ids[1][1], "params": {"threshold": 1e9, "close_m": 0, "open_m": 0, "min_area_m2": 0, "clearance_m": 0}},
+    ).json()["id"]
+
+    r = client.post(
+        "/api/plan",
+        json={
+            "waypoints": [{"x": 30005, "y": 119005}, {"x": 30045, "y": 119035}],
+            "mode": "auto", "algorithm": "grid_astar", "vehicle_id": "HD785",
+            "costmap_layer_id": ids[0][1], "drivable_layer_id": dv_b, "spacing_m": 2.0,
+        },
+    )
+    assert r.status_code == 422, r.text
+    assert "グリッド" in r.json()["detail"]
+
+    client.delete(f"/api/layers/{dv_b}")
+    for las_id, cost_id in ids:
+        client.delete(f"/api/layers/{cost_id}")
+        client.delete(f"/api/layers/{las_id}")
 
 
 def test_costmap_from_las(tmp_path):

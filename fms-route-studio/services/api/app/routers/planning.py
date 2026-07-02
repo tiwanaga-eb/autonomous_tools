@@ -32,6 +32,7 @@ from planning_core.planners import (
 )
 from .. import store
 from .. import vehicle_overrides
+from ..rasters import MISREGISTERED_MSG, same_grid
 
 router = APIRouter(prefix="/api", tags=["planning"])
 
@@ -210,7 +211,11 @@ def plan(req: PlanRequest):
         cost, transform = _rd(cl["cost_cog"])
         mask = None
         if dl and "mask_cog" in dl:
-            mask, _ = _rd(dl["mask_cog"])
+            mask, mtf = _rd(dl["mask_cog"])
+            # co-registration: cost と mask は同一グリッド前提（探索は1つの transform で両者を参照）。
+            # shape だけでなく transform も照合し、別ゾーン/別コストマップ由来の誤結合を弾く。
+            if not same_grid(transform, cost.shape, mtf, mask.shape):
+                raise HTTPException(422, MISREGISTERED_MSG)
         obstacle = float(cl.get("obstacle_value", 1e9))
 
         # 進入禁止領域(NoGoZone): cost を obstacle に、mask を 0 にカーブアウト（planner が回避）。
@@ -355,6 +360,9 @@ def plan(req: PlanRequest):
             rm, mt = _rd(dl["mask_cog"])
             if rtf is None:
                 rtf = mt
+            elif rc is not None and not same_grid(rtf, rc.shape, mt, rm.shape):
+                # rrt_star も 1 transform で cost/mask を併参照するため co-registration 必須
+                raise HTTPException(422, MISREGISTERED_MSG)
         if rtf is not None and rc is not None:
             burn = _rasterize_nogo(req.no_go_polygons, rtf, rc.shape)
             if burn is not None:
