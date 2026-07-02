@@ -273,6 +273,11 @@ const SWITCHZONE_STYLE = new Style({
   stroke: new Stroke({ color: "#16a34a", width: 2, lineDash: [8, 4] }),
   fill: new Fill({ color: "#16a34a22" }),
 });
+// 走行を収めるエリア（containment: 経路＋車体をこの中に収める）。選択中を青破線で明示。
+const CONTAINZONE_STYLE = new Style({
+  stroke: new Stroke({ color: "#2563eb", width: 2.5, lineDash: [10, 5] }),
+  fill: new Fill({ color: "#2563eb18" }),
+});
 // 確定済み Drivable 編集のアウトライン（include=緑 / exclude=赤）。どこを手修正したか可視化。
 const EDIT_INCLUDE_STYLE = new Style({
   stroke: new Stroke({ color: "#22c55e", width: 2, lineDash: [4, 3] }),
@@ -402,6 +407,7 @@ export function MapView() {
   const spotTarget = useStore((s) => s.spotTarget);
   const spotSwitchPose = useStore((s) => s.spotSwitchPose);
   const spotSwitchZoneId = useStore((s) => s.spotSwitchZoneId);
+  const spotContainAreaId = useStore((s) => s.spotContainAreaId);
   const spotExitGoal = useStore((s) => s.spotExitGoal);
   const spotRoadWidthM = useStore((s) => s.spotRoadWidthM);
   const drivableLayerId = useStore((s) => s.drivableLayerId);
@@ -478,6 +484,7 @@ export function MapView() {
         if (kind === "spotexit") return SPOT_EXIT_STYLE;
         if (kind === "spotswitch") return SPOT_SWITCH_STYLE;
         if (kind === "switchzone") return SWITCHZONE_STYLE;
+        if (kind === "containzone") return CONTAINZONE_STYLE;
         if (kind === "editinclude") return EDIT_INCLUDE_STYLE;
         if (kind === "editexclude") return EDIT_EXCLUDE_STYLE;
         if (kind === "spotvehicle") return SPOT_VEHICLE_STYLE;
@@ -945,6 +952,18 @@ export function MapView() {
       }
     }
 
+    // 走行を収めるエリア（containment: 選択中の area を青破線で強調＝適用中であることを可視化）
+    if (spotContainAreaId) {
+      const z = areas.find((a) => a.id === spotContainAreaId);
+      if (z && z.points.length >= 3) {
+        const ring = z.points.map((p) => [p.x, p.y]);
+        ring.push(ring[0]);
+        const f = new Feature(new Polygon([ring]));
+        f.set("kind", "containzone");
+        src.addFeature(f);
+      }
+    }
+
     // 寄り付き経路: gear ごとに連続区間を分けて前進(実線)/後進(破線)で描画
     if (spotResult && spotResult.points.length > 1) {
       const pts = spotResult.points;
@@ -983,7 +1002,7 @@ export function MapView() {
         src.addFeature(f);
       }
     }
-  }, [waypoints, route, areas, activePolygon, importedRoutes, roadWidthM, vehDims, showWaypoints, spotStart, spotTarget, spotSwitchPose, spotSwitchZoneId, spotExitGoal, spotRoadWidthM, spotResult, layers, drivableLayerId, savedRoutes, showSavedRoutes, fleetConflicts, activeFeature, fleetSim, fleetSimT, fleetBays]);
+  }, [waypoints, route, areas, activePolygon, importedRoutes, roadWidthM, vehDims, showWaypoints, spotStart, spotTarget, spotSwitchPose, spotSwitchZoneId, spotContainAreaId, spotExitGoal, spotRoadWidthM, spotResult, layers, drivableLayerId, savedRoutes, showSavedRoutes, fleetConflicts, activeFeature, fleetSim, fleetSimT, fleetBays]);
 
   // ---- Analysisグラフのホバー点を地図上にハイライト＋車両矩形を動的表示（共有index）----
   // AnalysisPanel と同じ「アクティブ解析」を参照: 寄り付き工程で寄り付き解析があればその軌跡、

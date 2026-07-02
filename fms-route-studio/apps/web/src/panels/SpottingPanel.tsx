@@ -63,7 +63,9 @@ export function SpottingPanel() {
   const costLayer = pickLayer(layers, "cost", costLayerId);
   const W = spotWeights;
   const setW = (k: keyof typeof W) => (e: ChangeEvent<HTMLInputElement>) =>
-    setSpotWeights({ ...W, [k]: +e.target.value });
+    setSpotWeights({ ...W, [k]: Math.max(0, +e.target.value) }); // 負の重みはコスト関数を壊すため 0 でクランプ
+  // 方位入力は [0,360) に正規化（-5 → 355 のラップ挙動。スピナーでも一周できる）
+  const wrapDeg = (v: number) => ((v % 360) + 360) % 360;
   const playRef = useRef<number | null>(null);
 
   const stopPlay = () => {
@@ -208,7 +210,7 @@ export function SpottingPanel() {
             step="5"
             value={spotStart ? Math.round(spotStart.heading_deg) : 0}
             disabled={!spotStart}
-            onChange={(e) => spotStart && setSpotStart({ ...spotStart, heading_deg: +e.target.value })}
+            onChange={(e) => spotStart && setSpotStart({ ...spotStart, heading_deg: wrapDeg(+e.target.value) })}
           />
         </label>
         <label>
@@ -218,7 +220,7 @@ export function SpottingPanel() {
             step="5"
             value={spotTarget ? Math.round(spotTarget.heading_deg) : 0}
             disabled={!spotTarget}
-            onChange={(e) => spotTarget && setSpotTarget({ ...spotTarget, heading_deg: +e.target.value })}
+            onChange={(e) => spotTarget && setSpotTarget({ ...spotTarget, heading_deg: wrapDeg(+e.target.value) })}
           />
         </label>
       </div>
@@ -299,7 +301,7 @@ export function SpottingPanel() {
                 type="number"
                 step="5"
                 value={Math.round(spotSwitchPose.heading_deg)}
-                onChange={(e) => setSpotSwitchPose({ ...spotSwitchPose, heading_deg: +e.target.value })}
+                onChange={(e) => setSpotSwitchPose({ ...spotSwitchPose, heading_deg: wrapDeg(+e.target.value) })}
               />
             </label>
           )}
@@ -372,12 +374,12 @@ export function SpottingPanel() {
           title="蛇行を抑え直線的に（クネクネ低減）">直線的に</button>
       </div>
       <div className="grid2">
-        <label>距離<input type="number" step="0.5" value={W.w_distance} onChange={setW("w_distance")} /></label>
-        <label>時間<input type="number" step="0.5" value={W.w_time} onChange={setW("w_time")} /></label>
-        <label>後進距離<input type="number" step="0.5" value={W.w_reverse} onChange={setW("w_reverse")} /></label>
-        <label>切り返し<input type="number" step="1" value={W.w_switchback} onChange={setW("w_switchback")} /></label>
-        <label>コストマップ<input type="number" step="0.5" value={W.w_costmap} onChange={setW("w_costmap")} /></label>
-        <label>旋回(蛇行抑制)<input type="number" step="1" value={W.w_turn} onChange={setW("w_turn")} /></label>
+        <label>距離<input type="number" step="0.5" min="0" value={W.w_distance} onChange={setW("w_distance")} /></label>
+        <label>時間<input type="number" step="0.5" min="0" value={W.w_time} onChange={setW("w_time")} /></label>
+        <label>後進距離<input type="number" step="0.5" min="0" value={W.w_reverse} onChange={setW("w_reverse")} /></label>
+        <label>切り返し<input type="number" step="1" min="0" value={W.w_switchback} onChange={setW("w_switchback")} /></label>
+        <label>コストマップ<input type="number" step="0.5" min="0" value={W.w_costmap} onChange={setW("w_costmap")} /></label>
+        <label>旋回(蛇行抑制)<input type="number" step="1" min="0" value={W.w_turn} onChange={setW("w_turn")} /></label>
       </div>
       <div className="row" style={{ marginTop: 6 }}>
         <button className="primary" onClick={simulate} disabled={!spotStart || !spotTarget || busy}>
