@@ -17,8 +17,7 @@ from pydantic import BaseModel, Field
 # 寄り付き候補生成アルゴリズム。auto=全手法をコスト比較 / 個別手法。
 SpottingMethod = Literal["auto", "dubins", "reeds_shepp", "hybrid_astar"]
 
-from planning_core.analysis import build_trajectory, elevation_and_grade, summarize, verify_safety
-from planning_core.footprint import path_min_clearance
+from planning_core.orchestrator import analyze_polyline
 from planning_core.simulator import CostWeights, plan_spotting
 
 from .. import store
@@ -241,39 +240,24 @@ def spotting(req: SpottingRequest):
 
 
 def _attach_analysis(out: dict, res, veh, dsm, dsm_t, dmask, dtransform, min_speed_mps: float = 0.0) -> None:
-    """寄り付き経路にも経路と同じ軌跡解析(曲率/最小半径/操舵/勾配/速度)＋安全検証を付与する。
+    """寄り付き経路にも経路と同じ軌跡解析(曲率/最小半径/操舵/勾配/標高/速度)＋安全検証を付与する。
 
-    寄り付きは前後進(cusp)を含むため gear を渡して速度プロファイルを切り返しで停止させ、
-    cusp は曲率/操舵評価から自動除外される（build_trajectory/summarize と同じ扱い）。
+    共通後処理は orchestrator.analyze_polyline（/plan と同一実装）を共用。寄り付きは前後進(cusp)を
+    含むため gear を渡して速度プロファイルを切り返しで停止させ、cusp は曲率/操舵評価から自動除外
+    される。低速マニューバのため dκ/ds(操舵レート)は参考扱い（合否に効かせない）。
+    一発到達精度（P-008: 水平±0.5m・方位±5°）は合否チェックに含める。
     """
     pts = res.points
     if not pts or len(pts) < 2:
         return
     xy = np.array([[p["x"], p["y"]] for p in pts], float)
     gears = [p.get("gear") for p in pts]
-    grade = None
-    zprof = None
-    if dsm is not None and dsm_t is not None:
-        try:
-            s = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(xy[:, 0]), np.diff(xy[:, 1])))])
-            zprof, grade = elevation_and_grade(xy, s, dsm, dsm_t)
-        except (rasterio.errors.RasterioIOError, ValueError, IndexError):
-            # DSM 読込失敗/CRS不整合/範囲外は勾配なしで継続（想定外は伝播させる）
-            grade = zprof = None
-    traj = build_trajectory(xy, vehicle=veh, grade_pct=grade, gears=gears, min_speed_mps=min_speed_mps, z=zprof)
-    result = summarize(traj, vehicle=veh, drivable_mask=dmask, transform=dtransform)
-    clearance_m = None
-    if dmask is not None and dtransform is not None:
-        try:
-            clearance_m, _ = path_min_clearance(xy, dmask, dtransform)
-        except Exception:  # noqa: BLE001
-            clearance_m = None
-    # 寄り付きは低速マニューバのため dκ/ds(操舵レート)は非拘束 → 参考扱い（合否に効かせない）。
-    # 一発到達精度（P-008: 水平±0.5m・方位±5°）も合否チェックに含める。
     err_m = getattr(res, "approach_error_m", None)
-    safety = verify_safety(
-        traj, result, veh, clearance_m=clearance_m, advisory_kinds=("kappa_rate",),
-        footprint_evaluated=dmask is not None,
+    traj, result, safety, _clearance, _warn = analyze_polyline(
+        xy, vehicle=veh, gears=gears,
+        dsm=dsm, dsm_transform=dsm_t,
+        drivable_mask=dmask, drivable_transform=dtransform,
+        min_speed_mps=min_speed_mps, advisory_kinds=("kappa_rate",),
         approach_error_m=(err_m if err_m is not None and math.isfinite(err_m) else None),
         approach_error_deg=getattr(res, "approach_error_deg", None),
     )
