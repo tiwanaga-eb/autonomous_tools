@@ -83,6 +83,7 @@ export function RoutePanel() {
   }
   function deleteSavedRoute(id: string) {
     setSavedRoutes(savedRoutes.filter((r) => r.id !== id));
+    useStore.getState().setFleetBay(id, null); // 紐づく待避所設定も削除（孤児化防止）
   }
 
   // 高さ(Z)埋め込み: 現在の経路＋保存済み経路の各点に、点群由来 DSM の標高を後付けサンプリング。

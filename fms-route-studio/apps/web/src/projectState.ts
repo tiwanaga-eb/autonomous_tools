@@ -2,11 +2,16 @@
 // レイヤはサーバ側レジストリで別管理のため含めない（読込後もレイヤはそのまま）。
 // v2: **経路ジオメトリ(route)も保存**し、再読込時にそのまま復元する（経路・エリアを保存→呼出→編集）。
 //     spotResult はレイヤ依存のクリアランス評価を含むため従来どおり保存しない。
+// v3: 寄り付きの詳細設定（手動切り返し点/切り返しゾーン/直線マージン/退出/コスト重み）も保存。
+//     従来はこれらが復元されず、再読込のたびに既定値へ戻っていた（データ損失）。
 
 import { pickLayer } from "@/layerSelect";
 import { useStore } from "@/store/useStore";
 
-const VERSION = 2;
+const VERSION = 3;
+
+// store の既定値と一致させる（applyProject で欠落時に使うフォールバック）
+const DEFAULT_SPOT_WEIGHTS = { w_distance: 1, w_time: 0, w_reverse: 1, w_switchback: 8, w_costmap: 2, w_turn: 6 };
 
 export function serializeProject(): Record<string, unknown> {
   const s = useStore.getState();
@@ -45,6 +50,13 @@ export function serializeProject(): Record<string, unknown> {
     spotMinSpeedKmh: s.spotMinSpeedKmh,
     spotContainAreaId: s.spotContainAreaId,
     spotRoadWidthM: s.spotRoadWidthM,
+    // v3: 寄り付き詳細設定
+    spotSwitchPose: s.spotSwitchPose,
+    spotSwitchZoneId: s.spotSwitchZoneId,
+    spotCuspMargin: s.spotCuspMargin,
+    spotWithExit: s.spotWithExit,
+    spotExitGoal: s.spotExitGoal,
+    spotWeights: s.spotWeights,
   };
 }
 
@@ -68,8 +80,10 @@ export function applyProject(state: Record<string, unknown>): void {
   s.setSavedRoutes(g("savedRoutes", []) as never);
   s.setShowSavedRoutes(g("showSavedRoutes", true));
   s.setFleetConflicts(null);
+  // 待避所は保存経路に存在する routeId のみ復元（孤児を持ち込まない）。前プロジェクトの残留も置換で消す。
   const bays = g<Record<string, import("@/types/api").BayCfg>>("fleetBays", {});
-  Object.entries(bays).forEach(([rid, cfg]) => s.setFleetBay(rid, cfg));
+  const routeIds = new Set((g("savedRoutes", []) as { id: string }[]).map((r) => r.id));
+  s.setFleetBays(Object.fromEntries(Object.entries(bays).filter(([rid]) => routeIds.has(rid))));
   s.setVehicleId(g("vehicleId", null));
   s.setCostLayerId(g("costLayerId", null));
   s.setDrivableLayerId(g("drivableLayerId", null));
@@ -95,4 +109,11 @@ export function applyProject(state: Record<string, unknown>): void {
   s.setSpotMinSpeedKmh(g("spotMinSpeedKmh", 0));
   s.setSpotContainAreaId(g("spotContainAreaId", null));
   s.setSpotRoadWidthM(g("spotRoadWidthM", 0));
+  // v3: 寄り付き詳細設定（v2 以前のプロジェクトは既定値に戻る）
+  s.setSpotSwitchPose(g("spotSwitchPose", null));
+  s.setSpotSwitchZoneId(g("spotSwitchZoneId", null));
+  s.setSpotCuspMargin(g("spotCuspMargin", 0));
+  s.setSpotWithExit(g("spotWithExit", false));
+  s.setSpotExitGoal(g("spotExitGoal", null));
+  s.setSpotWeights(g("spotWeights", DEFAULT_SPOT_WEIGHTS));
 }

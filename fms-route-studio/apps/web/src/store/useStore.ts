@@ -182,6 +182,7 @@ export interface AppState extends Snapshot {
   setFleetSim: (s: FleetSimResult | null) => void;
   setFleetSimT: (t: number) => void;
   setFleetBay: (routeId: string, cfg: BayCfg | null) => void;
+  setFleetBays: (bays: Record<string, BayCfg>) => void; // 一括置換（プロジェクト読込で残留を掃除）
 
   commit: () => void; // 変更前スナップショットを履歴に積む
   undo: () => void;
@@ -335,6 +336,7 @@ export const useStore = create<AppState>((set) => ({
       else delete next[routeId];
       return { fleetBays: next };
     }),
+  setFleetBays: (fleetBays) => set({ fleetBays }),
 
   commit: () =>
     set((s) => ({ undoStack: [...s.undoStack.slice(-(MAX_HISTORY - 1)), snap(s)], redoStack: [] })),
