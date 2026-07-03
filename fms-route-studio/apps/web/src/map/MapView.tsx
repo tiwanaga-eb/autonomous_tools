@@ -7,6 +7,8 @@ import { useEffect, useRef, useState } from "react";
 import Feature from "ol/Feature";
 import OLMap from "ol/Map";
 import View from "ol/View";
+import MousePosition from "ol/control/MousePosition";
+import ScaleLine from "ol/control/ScaleLine";
 import { defaults as defaultControls } from "ol/control/defaults";
 import type { Extent } from "ol/extent";
 import { LineString, Point, Polygon } from "ol/geom";
@@ -164,7 +166,14 @@ export function MapView() {
       view: new View({ projection: WORKING_CRS, center: [0, 0], zoom: 2 }),
       // 既定のズーム(+/-)コントロールは左上の 2D/3D 切替と重なるため非表示
       // （ホイール/トラックパッドでズーム可。属性表示は残す）。
-      controls: defaultControls({ zoom: false }),
+      // スケールバー＋カーソル座標（作業CRSメートル）を常時表示＝現場座標の読み取り・距離感の基準。
+      controls: defaultControls({ zoom: false }).extend([
+        new ScaleLine({ units: "metric", minWidth: 80 }),
+        new MousePosition({
+          coordinateFormat: (c) => (c ? `X ${c[0].toFixed(1)} / Y ${c[1].toFixed(1)} m` : ""),
+          placeholder: "",
+        }),
+      ]),
     });
     mapRef.current = map;
 

@@ -276,3 +276,12 @@ input[type="checkbox"] { accent-color: var(--brand); width: 15px; height: 15px; 
 .safety-checks li.bad { color: var(--bad); }
 .safety-checks li.na { color: var(--ink-faint); }
 .safety-checks .sval { color: var(--ink-soft); }
+
+/* 地図コントロール: スケールバー＋カーソル座標（作業CRSメートル）。light テーマに合わせる */
+.ol-scale-line { background: #ffffffcc; bottom: 8px; left: 8px; border-radius: 4px; padding: 2px 4px; }
+.ol-scale-line-inner { border-color: #1f2937; color: #1f2937; font-size: 11px; }
+.ol-mouse-position {
+  top: auto; right: 8px; bottom: 8px; left: auto; position: absolute;
+  background: #ffffffcc; color: #1f2937; font-size: 11px; font-variant-numeric: tabular-nums;
+  padding: 2px 6px; border-radius: 4px; pointer-events: none; min-height: 15px;
+}

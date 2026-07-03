@@ -283,7 +283,7 @@ export function RoutePanel() {
       </div>
       <div className="grid2">
         <label>
-          spacing (m)
+          点間隔 (m)
           <input type="number" step="0.5" min="0.1" value={routeSpacing} onChange={(e) => setRouteSpacing(+e.target.value)} />
         </label>
         <label title="0 のときは選択車両の車幅で道幅帯を表示。>0 で A* が領域内に確保する道幅にもなる">
@@ -293,7 +293,7 @@ export function RoutePanel() {
       </div>
       <label className="slider" style={{ flexDirection: "row", gap: 6, alignItems: "center" }}>
         <input type="checkbox" checked={showWaypoints} onChange={(e) => setShowWaypoints(e.target.checked)} />
-        <span>show waypoints (点)</span>
+        <span>経路点を表示</span>
       </label>
       {effAlgo === "hybrid_astar" && (
         <>

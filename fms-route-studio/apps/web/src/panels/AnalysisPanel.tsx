@@ -69,28 +69,28 @@ export function AnalysisPanel() {
       <h3>解析 · {sourceLabel}</h3>
       <ul className="metrics">
         <li>
-          <span>length</span>
+          <span>総延長</span>
           <b>{t.length_m.toFixed(1)} m</b>
         </li>
         <li>
-          <span>min radius</span>
+          <span>最小旋回半径</span>
           <b>{t.min_radius_m === null ? "∞" : `${t.min_radius_m.toFixed(2)} m`}</b>
         </li>
         <li>
-          <span>max κ</span>
+          <span>最大曲率 |κ|</span>
           <b>{a.max_curvature.toFixed(4)} 1/m</b>
         </li>
         <li>
-          <span>max dκ/ds</span>
+          <span>最大 dκ/ds</span>
           <b>{a.max_curvature_rate.toExponential(2)} 1/m²</b>
         </li>
         <li>
-          <span>source</span>
-          <b>{t.curvature_source}</b>
+          <span>曲率ソース</span>
+          <b>{t.curvature_source === "analytic" ? "解析解" : "数値"}</b>
         </li>
         {a.max_speed_mps != null && (
           <li>
-            <span>max speed</span>
+            <span>最高速度</span>
             <b>{a.max_speed_mps.toFixed(1)} m/s</b>
           </li>
         )}
@@ -107,7 +107,7 @@ export function AnalysisPanel() {
           </li>
         )}
         <li>
-          <span>feasible</span>
+          <span>実現可能性</span>
           <b className={a.feasible ? "ok" : "bad"}>{a.feasible ? "OK" : "NG"}</b>
         </li>
       </ul>
