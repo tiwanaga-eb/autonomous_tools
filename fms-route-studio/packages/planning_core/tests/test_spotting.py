@@ -277,7 +277,11 @@ def test_spotting_endpoint_overhang_ignored():
 
 
 def test_spotting_best_effort_minimizes_overhang():
-    """完全に収まる候補が無いとき、best-effort は『はみ出し率最小』の候補を返す。"""
+    """完全に収まる候補が無いとき、best-effort は『はみ出し率最小』の候補を返す。
+
+    注: 幅13mの旧シナリオは hybrid の footprint 対応（多点ターン）で解けるようになったため、
+    車体対角(8.7m)に対し回転余地の無い幅9.5mへ狭めて「真に不可」を維持する。
+    """
     cell = 0.5
     W, H = 100, 36
     t = Affine(cell, 0, 0, 0, -cell, 18.0)
@@ -286,9 +290,9 @@ def test_spotting_best_effort_minimizes_overhang():
     X = np.broadcast_to(cc, (H, W))
     Y = np.broadcast_to(rr, (H, W))
     mask = np.zeros((H, W), np.uint8)
-    mask[(X >= 2) & (X <= 38) & (Y >= 2) & (Y <= 15)] = 1  # 幅13m=この車では切り返し不可
+    mask[(X >= 2) & (X <= 38) & (Y >= 2) & (Y <= 11.5)] = 1  # 幅9.5m: 8×3.5m車は反転不可
     veh = _Veh(8.0, 3.5)
-    r = plan_spotting((6.0, 8.0, 0.0), (33.0, 8.0, math.pi), rho=6.0, max_switchbacks=1,
+    r = plan_spotting((6.0, 6.75, 0.0), (33.0, 6.75, math.pi), rho=6.0, max_switchbacks=1,
                       require_switchback=True, drivable_mask=mask, transform=t, vehicle=veh, step=0.4,
                       footprint_ignore_ends_m=0.6 * 8.0)
     assert not r.feasible
@@ -388,3 +392,34 @@ def test_endpoint_stationary_steer_allowed_option():
     assert res.points
     ks, kg = _endpoint_curvature(res)
     assert ks > 0.5 / rho or kg > 0.5 / rho, (ks, kg)
+
+
+def test_spotting_narrow_corridor_multipoint_turn():
+    """狭いコリドー（帯）でも解ける: HM400 相当が幅18mの帯内で180°反転して寄り付く。
+
+    hybrid A* を footprint 対応＋細格子リトライ化し、カスプ直線マージンを「収まらないなら挿入
+    しない」へ倒した回帰。従来は幅32mでも FOOTPRINT_OUTSIDE で全滅していた。
+    """
+    from rasterio.transform import from_origin
+
+    from planning_core.vehicle.profiles import load_builtin
+
+    veh = load_builtin("HM400")
+    W, L, cell, pad = 18.0, 80.0, 0.5, 8.0
+    h = int(round((W + 2 * pad) / cell))
+    wpx = int(round((L + 2 * pad) / cell))
+    t = from_origin(-pad, W + pad, cell, cell)
+    mask = np.zeros((h, wpx), np.uint8)
+    r0, r1 = int(round(pad / cell)), int(round((pad + W) / cell))
+    c0, c1 = int(round(pad / cell)), int(round((pad + L) / cell))
+    mask[r0:r1, c0:c1] = 1
+
+    res = plan_spotting(
+        (10.0, W * 0.5, 0.0), (18.0, W * 0.5, math.pi), rho=veh.min_turning_radius,
+        max_switchbacks=1, drivable_mask=mask, transform=t, vehicle=veh,
+        footprint_ignore_ends_m=veh.overall_length * 0.6,
+    )
+    assert res.feasible and res.status == "OK", (res.status, res.fp_max_frac)
+    assert res.footprint_inside is True
+    assert res.n_switchbacks >= 2  # 狭所は多点ターン（複数切り返し）で解く
+    assert res.approach_error_m < 0.5

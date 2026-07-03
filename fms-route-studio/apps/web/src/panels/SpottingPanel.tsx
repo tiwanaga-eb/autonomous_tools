@@ -252,11 +252,11 @@ export function SpottingPanel() {
           <input type="number" min={0} max={20} step={1} value={spotMinSpeedKmh}
                  onChange={(e) => setSpotMinSpeedKmh(Math.max(0, +e.target.value))} />
         </label>
-        <label>
-          切り返し回数
+        <label title="「あり」を選ぶと通常は1回の切り返しで寄り付き、狭いエリアでは自動的に複数回の切り返し（多点ターン）で車体を収めます">
+          切り返し
           <select value={spotMaxSwitch} onChange={(e) => setSpotMaxSwitch(Number(e.target.value) as 0 | 1)}>
-            <option value={0}>0（前進のみ）</option>
-            <option value={1}>1（必須・後進で寄り付き）</option>
+            <option value={0}>なし（前進のみ）</option>
+            <option value={1}>あり（狭所は自動で複数回）</option>
           </select>
         </label>
         <label title="0 のときは選択車両の車幅で道幅帯を表示。>0 で要求クリアランス=道幅/2 にもなる">

@@ -105,13 +105,15 @@ def _adapt_margin(tip_dir, P, ux, uy, gear, margin, step, fp_ok):
     """cusp のオーバーシュート tip がエリア内に収まる最大マージンを選ぶ（狭窄エリア対応）。
 
     tip = P + tip_dir·m·(ux,uy)。fp_ok が無ければ margin をそのまま返す。tip 区間（P→tip）の
-    数点で車体フットプリントを判定し、はみ出さない最大の m を採用。最小マージン(0.2·margin)でも
-    はみ出す場合はそれを返す（その姿勢自体が不可なので候補は別途 infeasible になる）。
+    数点で車体フットプリントを判定し、はみ出さない最大の m を採用。**どの長さでもはみ出す場合は
+    0.0（挿入なし）**を返す — 包含はハード制約（安全ゲート）であり、直線マージンは追従性の
+    ヒューリスティックなので、狭所では「マージンよりも収まること」を優先する（cusp では停止する
+    ため、最悪でも停止中の据え切りで追従できる）。
     """
     if fp_ok is None or margin <= 0:
         return margin
     yaw = math.atan2(uy, ux) + (math.pi if gear == "R" else 0.0)
-    for m in (margin, 0.66 * margin, 0.4 * margin, 0.2 * margin):
+    for m in (margin, 0.66 * margin, 0.4 * margin, 0.2 * margin, 0.1 * margin):
         ok = True
         nchk = max(2, int(m / max(step, 1e-6)) + 1)
         for i in range(1, nchk + 1):
@@ -121,7 +123,7 @@ def _adapt_margin(tip_dir, P, ux, uy, gear, margin, step, fp_ok):
                 break
         if ok:
             return m
-    return 0.2 * margin
+    return 0.0
 
 
 def _apply_cusp_margins(segments, margin: float, step: float, fp_ok=None):
@@ -149,6 +151,8 @@ def _apply_cusp_margins(segments, margin: float, step: float, fp_ok=None):
             continue
         ux, uy = dx / L, dy / L
         m = _adapt_margin(1.0, P, ux, uy, pg, margin, step, fp_ok)  # tip は前進方向(+)へ
+        if m <= 1e-9:
+            continue  # どの長さでもはみ出す → 挿入なし（cusp 停止中の据え切りで追従）
         Pp = (P[0] + m * ux, P[1] + m * uy)
         pp.extend(_straight_pts(P, Pp, step)[1:])           # 前セグ: P→Pp 直進オーバーシュート（同ギア）
         segs[k] = (_straight_pts(Pp, P, step) + cp[1:], cg)  # 現セグ: Pp→P 直進(後進)＋元の続き
@@ -166,13 +170,14 @@ def _stage_segments(start, S, Syaw, target, rho, step, margin, fp_ok=None):
 
     fp_ok を与えると、手前マージン区間(S_pre→S)がエリアをはみ出さない範囲までマージンを短縮する。
     """
-    if margin <= 0:
+    c, s = math.cos(Syaw), math.sin(Syaw)
+    # 手前マージン区間 S_pre→S（前進ヘッディング=Syaw）がエリア内に収まるよう margin を適応短縮。
+    if margin > 0:
+        margin = _adapt_margin(-1.0, S, c, s, "F", margin, step, fp_ok)
+    if margin <= 1e-9:  # マージン無し（狭所で挿入余地なし or 指定0）: S へ直接接続
         f = sample_dubins(start, (S[0], S[1], Syaw), rho, step)
         r = reverse_dubins((S[0], S[1], Syaw), target, rho, step)
         return None if (f is None or r is None) else [(f, "F"), (r, "R")]
-    c, s = math.cos(Syaw), math.sin(Syaw)
-    # 手前マージン区間 S_pre→S（前進ヘッディング=Syaw）がエリア内に収まるよう margin を適応短縮。
-    margin = _adapt_margin(-1.0, S, c, s, "F", margin, step, fp_ok)
     S_pre = (S[0] - margin * c, S[1] - margin * s)  # S の手前（進入方位の逆へ margin）
     f_dub = sample_dubins(start, (S_pre[0], S_pre[1], Syaw), rho, step)
     r_dub = reverse_dubins((S_pre[0], S_pre[1], Syaw), target, rho, step)
@@ -566,22 +571,51 @@ def _smooth_segment(pts, accept, r_min, step, *, lock_start_m: float = 0.0, lock
 
 
 def _hybrid_candidate(start, target, rho, cost, mask, transform, obstacle_value, allow_reverse, ev,
-                      margin=0.0, step=0.3, fp_ok=None):
+                      margin=0.0, step=0.3, fp_ok=None, footprint=None):
     """コストに沿って滑らかに曲がる cost-aware 候補（hybrid A*, 後進可）。失敗時 None。
-    内部 cusp にも直線マージンを挿入して追従可能にする。"""
+    内部 cusp にも直線マージンを挿入して追従可能にする。
+
+    footprint: 車体サンプル点（footprint_sample_points）。与えると**探索自体が向き付き車体の
+    包含を制約**する＝狭いエリアでも「車体が収まる」N点ターンを hybrid が構築できる
+    （従来は中心点判定で探索→ ev の footprint 評価で全滅し、狭所で解が出なかった）。
+
+    1回目は粗い格子（速い）。不成立/はみ出しなら **細格子＋細ヨーで再試行**（狭所は格子が粗いと
+    切り返しの置き場が量子化で消えるため）。細試行は max_iters でバウンドする。
+    """
     from ..planners.hybrid_astar import hybrid_astar
 
-    res = hybrid_astar(
-        start, target, rho=rho, mask=mask, transform=transform, cost=cost,
-        obstacle_value=obstacle_value, allow_reverse=allow_reverse,
-        xy_res=max(rho * 0.3, 1.0), yaw_res_deg=15.0,
-        pos_tol=max(rho * 0.3, 1.5), analytic_radius=max(2.5 * rho, 8.0),
-        soft_cost_weight=2.0, reverse_penalty=2.0, cusp_penalty=6.0, max_iters=50000,
-    )
-    if res is None:
-        return None
-    segs = _segments_from_hybrid(res["points"])
-    return ev(_apply_cusp_margins(segs, margin, step, fp_ok)) if segs else None
+    attempts = [
+        dict(xy_res=max(rho * 0.3, 1.0), yaw_res_deg=15.0, pos_tol=max(rho * 0.3, 1.5), max_iters=50000),
+    ]
+    # 細格子リトライは「footprint 制約つきの狭所」専用（粗い格子では切り返しの置き場が量子化で
+    # 消えるため）。footprint が無い不成立は幾何でなくクリアランス等が原因＝細格子でも解けないので
+    # やらない。反復上限は自由セル数でスケールし、解が無いケースの全探索を防ぐ。
+    if footprint is not None and mask is not None:
+        free = int((mask > 0).sum())
+        attempts.append(dict(xy_res=max(rho * 0.12, 0.7), yaw_res_deg=10.0,
+                             pos_tol=max(rho * 0.15, 1.0),
+                             max_iters=int(min(150000, max(30000, free * 10)))))
+    best = None
+    for a in attempts:
+        res = hybrid_astar(
+            start, target, rho=rho, mask=mask, transform=transform, cost=cost,
+            obstacle_value=obstacle_value, allow_reverse=allow_reverse,
+            footprint=footprint,
+            analytic_radius=max(2.5 * rho, 8.0),
+            soft_cost_weight=2.0, reverse_penalty=2.0, cusp_penalty=6.0, **a,
+        )
+        if res is None:
+            continue
+        segs = _segments_from_hybrid(res["points"])
+        if not segs:
+            continue
+        c = ev(_apply_cusp_margins(segs, margin, step, fp_ok))
+        if best is None or (c.feasible and not best.feasible) or \
+           (c.feasible == best.feasible and c.fp_max_frac < best.fp_max_frac):
+            best = c
+        if best is not None and best.feasible:
+            break  # 粗い試行で収まったら細試行は不要（速度優先）
+    return best
 
 
 def _score(res: SpottingResult, w: CostWeights) -> float:
@@ -674,12 +708,18 @@ def plan_spotting(
 
     # --- 向き付きフットプリント（実車体矩形）の包含判定をハード制約に。狭窄エリアで「切り返し点を
     #     含む全姿勢で車体がエリア外に出ない」ことを保証する。vehicle と領域が揃ったときのみ有効。---
-    fp_samp = fp_inv = None
+    fp_samp = fp_inv = fp_search = None
     fp_ok = None
     if vehicle is not None and drivable_mask is not None and transform is not None:
         poly = vehicle_footprint(vehicle)
         fp_samp = footprint_sample_points(poly, max(abs(transform.a), 0.5))
         fp_inv = _inv_affine(transform)
+        # hybrid A* の探索用フットプリント。粗すぎる（車体寸/6≈1.9m）と縁の細いはみ出しを
+        # 取り零して ev()（セル精度）と食い違うため、車体寸/12 か セル の粗い方を使う。
+        # 最終判定は fp_samp（セル精度）で ev() が再検査する。
+        fp_search = footprint_sample_points(
+            poly, max(abs(transform.a), max(vehicle.overall_width, vehicle.overall_length) / 12.0)
+        )
 
         def fp_ok(x, y, yaw):  # noqa: ANN001
             return footprint_clear(fp_samp, x, y, yaw, drivable_mask, fp_inv)
@@ -794,7 +834,7 @@ def plan_spotting(
     # --- cost-aware 候補: hybrid A*（コストに沿って滑らかに曲がる/後進可）。コストマップ or 領域がある時のみ ---
     if use_hybrid and (cost is not None or drivable_mask is not None):
         hc = _hybrid_candidate(start, target, rho, cost, drivable_mask, transform, obstacle_value, allow_switch, ev,
-                               margin=margin, step=step, fp_ok=fp_ok)
+                               margin=margin, step=step, fp_ok=fp_ok, footprint=fp_search)
         if hc is not None and _keep(hc):
             cands.append(hc)
 
