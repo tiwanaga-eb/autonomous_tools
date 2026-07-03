@@ -108,29 +108,21 @@ def _labels_near_points(labels, transform, pts, dt_other, thr, hw_self, cell):
     """
     rows, cols = _rc(transform, pts[:, 0], pts[:, 1])
     h, w = labels.shape
-    rad = int(np.ceil(hw_self / cell)) + 2
     out = np.zeros(len(pts), dtype=int)
-    for i in range(len(pts)):
-        r, c = rows[i], cols[i]
-        if not (0 <= r < h and 0 <= c < w) or dt_other[min(max(r, 0), h - 1), min(max(c, 0), w - 1)] > thr:
-            continue
-        best = 0
-        bestd = 1e9
-        for dr in range(-rad, rad + 1):
-            rr = r + dr
-            if rr < 0 or rr >= h:
-                continue
-            for dc in range(-rad, rad + 1):
-                cc = c + dc
-                if cc < 0 or cc >= w:
-                    continue
-                lab = labels[rr, cc]
-                if lab:
-                    d = dr * dr + dc * dc
-                    if d < bestd:
-                        bestd = d
-                        best = int(lab)
-        out[i] = best
+    if not np.any(labels):
+        return out
+    from scipy.ndimage import distance_transform_edt
+
+    # 全セル→最寄りの非ゼロラベルセル（EDT の return_indices）を1回だけ前計算し、
+    # 点ごとの (2rad+1)² 近傍走査（Python 二重ループ）を O(1) のテーブル参照に置き換える。
+    dist, (ir, ic) = distance_transform_edt(labels == 0, return_indices=True)
+    rad = float(np.ceil(hw_self / cell)) + 2.0
+    rr = np.clip(rows, 0, h - 1)
+    cc = np.clip(cols, 0, w - 1)
+    in_bounds = (rows >= 0) & (rows < h) & (cols >= 0) & (cols < w)
+    in_conflict = in_bounds & (dt_other[rr, cc] <= thr) & (dist[rr, cc] <= rad)
+    nearest_label = labels[ir[rr, cc], ic[rr, cc]]
+    out[in_conflict] = nearest_label[in_conflict]
     return out
 
 

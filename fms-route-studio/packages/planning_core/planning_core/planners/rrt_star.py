@@ -192,6 +192,20 @@ def rrt_star(
 
     nodes = [_Node(sx, sy, syaw, 0.0, -1, [(sx, sy, syaw, "F")])]
     children: list[list[int]] = [[]]  # nodes と並走する子リスト（rewire のコスト伝播に必要）
+
+    # 近傍クエリ用の並列座標バッファ。最近傍(1)/near集合(4) を Python の総当り
+    # min()/内包で回すと O(n) のインタプリタコストが支配的になるため、numpy で一括計算する
+    # （複雑度は同じ O(n²) だがベクトル化で実効 ~2桁高速。max_iters 規模では十分）。
+    _cap = max_iters + 4
+    _nx = np.empty(_cap)
+    _ny = np.empty(_cap)
+    _nyaw = np.empty(_cap)
+    _nx[0], _ny[0], _nyaw[0] = sx, sy, syaw
+
+    def _dists_to_all(bx: float, by: float, byaw: float, n: int) -> np.ndarray:
+        d = np.hypot(_nx[:n] - bx, _ny[:n] - by)
+        dy = np.abs((byaw - _nyaw[:n] + math.pi) % (2.0 * math.pi) - math.pi)
+        return d + w_yaw * dy
     goal_node = -1
     best_cost = float("inf")
     solved_at = -1
@@ -200,6 +214,8 @@ def rrt_star(
         nodes.append(node)
         children.append([])
         nid = len(nodes) - 1
+        if nid < _cap:  # 近傍クエリ用バッファへも登録
+            _nx[nid], _ny[nid], _nyaw[nid] = node.x, node.y, node.yaw
         if parent >= 0:
             children[parent].append(nid)
         return nid
@@ -233,8 +249,8 @@ def rrt_star(
             if not passable(rx, ry):
                 continue
 
-        # 2) 最近傍
-        ni = min(range(len(nodes)), key=lambda i: pose_dist(nodes[i].x, nodes[i].y, nodes[i].yaw, rx, ry, ryaw))
+        # 2) 最近傍（numpy 一括距離計算）
+        ni = int(np.argmin(_dists_to_all(rx, ry, ryaw, len(nodes))))
         near = nodes[ni]
 
         # 3) 伸長（step_max で切り詰め、その端点を新ノード姿勢に）
@@ -250,10 +266,7 @@ def rrt_star(
             continue
 
         # 4) 近傍集合の中で最小コスト親を選ぶ（choose-parent）
-        near_ids = [
-            i for i in range(len(nodes))
-            if pose_dist(nodes[i].x, nodes[i].y, nodes[i].yaw, nxx, nyy, nyaw) <= connect_radius
-        ]
+        near_ids = np.nonzero(_dists_to_all(nxx, nyy, nyaw, len(nodes)) <= connect_radius)[0].tolist()
         best_parent, best_seg, best_pcost = ni, seg, near.cost + edge_cost(seg)
         for i in near_ids:
             cand = connect((nodes[i].x, nodes[i].y, nodes[i].yaw), (nxx, nyy, nyaw))

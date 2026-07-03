@@ -315,6 +315,8 @@ def simulate_fleet_auto(vehicles: list[SimVehicle], *, dt: float = 0.2, gap_m: f
         i, j = res.min_sep_pair
         y = _yielder(work, i, j)
         other = j if y == i else i
+        if (y, 1) in tried and (y, -1) in tried:
+            break  # 譲る側の両サイドを試して改善なし → 反復を打ち切る（非収束防止）
         # ペア(y,other)の共有競合区間を特定し、譲る側 y の経路上の中点へ待避所を置く
         routes = [{"points": work[k].points, "half_width": work[k].half_width} for k in range(len(work))]
         cs = [c for c in detect_conflicts(routes, cell=cell, clearance_m=clearance_m)
@@ -330,10 +332,23 @@ def simulate_fleet_auto(vehicles: list[SimVehicle], *, dt: float = 0.2, gap_m: f
         tried.add((y, side))
         offset = work[y].half_width + work[other].half_width + gap_m + 2.0
         hold = 2.0 * max(work[y].half_length, work[other].half_length) + gap_m + 4.0
+        prev_pts = work[y].points
+        prev_sep = res.min_separation_m
         work[y].points = lateral_detour(work[y].points, s_center=s_center, offset=offset,
                                         side=side, ramp=max(6.0, hold * 0.5), hold=hold)
-        auto_bays.append({"vehicle": y, "s_center": round(s_center, 2), "offset": round(offset, 2), "side": side})
-        res = simulate_fleet(work, dt=dt, gap_m=gap_m, max_time=max_time, cell=cell, clearance_m=clearance_m)
+        trial = simulate_fleet(work, dt=dt, gap_m=gap_m, max_time=max_time, cell=cell, clearance_m=clearance_m)
+        # 採用条件: 解消した、または min_separation が改善した場合のみ。
+        # 悪化する待避所は巻き戻す（悪化を積み重ねて max_bays まで暴走するのを防ぐ）。
+        resolved = not (trial.collision or trial.deadlock)
+        improved = resolved or (
+            trial.min_separation_m is not None
+            and (prev_sep is None or trial.min_separation_m > prev_sep + 1e-6)
+        )
+        if improved:
+            auto_bays.append({"vehicle": y, "s_center": round(s_center, 2), "offset": round(offset, 2), "side": side})
+            res = trial
+        else:
+            work[y].points = prev_pts  # 巻き戻し。res は据え置き＝次周で同ペアの逆サイドを試す
     res.auto_bays = auto_bays
     return res
 

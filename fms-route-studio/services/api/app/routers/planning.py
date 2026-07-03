@@ -33,7 +33,7 @@ class XYIn(BaseModel):
 
 
 class PlanRequest(BaseModel):
-    waypoints: list[XYIn]
+    waypoints: list[XYIn] = Field(..., max_length=500)  # 手動配置の経由点（上限=DoS/誤送信ガード）
     mode: PlanMode = "waypoint_guided"
     algorithm: Algorithm = "spline"
     min_turn_radius_m: float | None = Field(None, gt=0)   # 正のみ（0/負は無効）
@@ -49,11 +49,11 @@ class PlanRequest(BaseModel):
     vehicle_id: str | None = None
     costmap_layer_id: str | None = None    # auto モードの cost / 勾配 DSM 供給元
     drivable_layer_id: str | None = None   # ハード制約（フットプリント包含）
-    no_go_polygons: list[list[tuple[float, float]]] | None = None  # 進入禁止領域（world座標多角形）
+    no_go_polygons: list[list[tuple[float, float]]] | None = Field(None, max_length=128)  # 進入禁止領域（world座標多角形）
 
 
 class AnalyzeRequest(BaseModel):
-    points: list[XYIn]
+    points: list[XYIn] = Field(..., max_length=200_000)  # 軌跡全体（0.5m間隔×100kmまで許容）
     vehicle_id: str | None = None
     costmap_layer_id: str | None = None
 
@@ -187,7 +187,7 @@ def analyze(req: AnalyzeRequest):
 
 
 class ElevationSampleRequest(BaseModel):
-    points: list[XYIn]
+    points: list[XYIn] = Field(..., max_length=200_000)
     costmap_layer_id: str | None = None    # 省略時: DSM を持つ最新の cost レイヤ
     smooth_m: float = Field(8.0, ge=0.0, le=100.0)  # 勾配解析と同じ平滑化窓[m]。0=生サンプル
 

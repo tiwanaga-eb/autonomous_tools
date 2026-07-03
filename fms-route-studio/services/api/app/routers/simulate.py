@@ -55,7 +55,7 @@ class SpottingRequest(BaseModel):
     costmap_layer_id: str | None = None      # コスト関数用 cost マップ（未指定なら drivable 経由で解決）
     use_footprint: bool = True               # 車両 footprint_radius を要求クリアランスに
     road_width_m: float | None = None        # 道幅[m]（>0 で要求クリアランス=道幅/2、footprint_radius を上書き）
-    no_go_polygons: list[list[tuple[float, float]]] | None = None  # 進入禁止領域（world座標多角形）
+    no_go_polygons: list[list[tuple[float, float]]] | None = Field(None, max_length=128)  # 進入禁止領域（world座標多角形）
     with_exit: bool = False                  # 退出軌道も生成する（既定の行先は start）
     exit_goal: PoseIn | None = None          # 退出の行先 Goal 姿勢（指定時 target→exit_goal。未指定は target→start）
     manual_switch_pose: PoseIn | None = None  # 手動切り返し点（指定時は前進→S→後進のみ生成）
