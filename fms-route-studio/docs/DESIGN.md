@@ -194,7 +194,7 @@ LAS/LAZ ──[costmap]──► cost(float32)+DSM+RGB COG
 | `costmap` | /api/costmap | コストマップ生成・DSM 格子（F-001, F-002） |
 | `drivable` | /api/drivable | 走行可能領域生成/再生成/編集（F-004, F-005） |
 | `geo` | /api/geo | 座標変換（I-004） |
-| `planning` | /api（直下、plan/analyze） | 経路生成・解析（F-006〜011, S-001〜004） |
+| `planning` | /api（直下、plan/analyze/elevation） | 経路生成・解析・標高後付け。**業務ロジックは `planning_core.orchestrator`**（plan_route/analyze_polyline）へ委譲し、ルーターはリクエスト解釈＋レイヤIOのみ（F-006〜011, S-001〜004） |
 | `vehicles` | /api/vehicles | 機種一覧/詳細/オーバーライド（F-016, F-017） |
 | `simulate` | /api/simulate | 寄り付き（F-012〜015） |
 | `projects` | /api/projects | プロジェクト CRUD（F-021） |
@@ -221,11 +221,14 @@ id, name, kinematic_type∈{rigid_bicycle, articulated, tracked_skid}
 
 ### Trajectory / TrajPoint / Waypoint（`route.py`）
 ```
-TrajPoint: s, x, y, heading_deg(+East/CCW), curvature κ, curvature_rate dκ/ds,
+TrajPoint: s, x, y, z?(標高[m]・点群由来DSMサンプル), heading_deg(+East/CCW),
+           curvature κ, curvature_rate dκ/ds,
            grade_pct?, steer_deg?(剛体ステアのみ), gear∈{F,R}?, speed_mps?, time_s?
 Trajectory: points[], length_m, min_radius_m?, curvature_source∈{analytic,numeric}
 Waypoint: id, role∈{start,via,goal}, xy, heading_deg?, gear?
 ```
+z と grade は `analysis.grade.elevation_and_grade()` が DSM を1回サンプルして同時に算出
+（grade は平滑化後 z の 100·dz/ds と厳密整合）。DSM 無し/範囲外は null。
 
 ### AnalysisResult / SafetyReport / Violation（`analysis.py`）
 ```
@@ -272,6 +275,8 @@ slope_limit_deg=15, obstacle_value=1e9, display_vmax?, ground_percentile=5, min_
 - `POST /api/plan`（PlanRequest）→ {trajectory, analysis, safety, measured_min_radius_m, min_clearance_m, warning, refined_elastic_band}
   - 主入力: waypoints[], mode, algorithm, vehicle_id, spacing_m, corridor_width_m, enforce_footprint, enforce_min_radius, allow_reverse, refine_elastic_band, min_turn_radius_m, planner_cell_m, limit_steer_rate, costmap_layer_id, drivable_layer_id, no_go_polygons[][]
 - `POST /api/analyze` {points, vehicle_id, costmap_layer_id} → {trajectory, analysis}（安全レポートなし）
+- `POST /api/elevation/sample` {points[], costmap_layer_id?, smooth_m?} → {z[], layer_id, n, n_missing}
+  - 保存済みルート等の任意点列に点群由来 DSM の標高 z を後付け（layer 省略時は DSM 持ち最新 cost レイヤ）
 
 ### 寄り付き
 - `POST /api/simulate/spotting`（SpottingRequest）→ {points[], switch_points[], metrics, trajectory, analysis, safety, feasible, status, reason, rho_m, method, exit?}
