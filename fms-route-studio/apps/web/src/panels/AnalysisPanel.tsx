@@ -150,6 +150,7 @@ export function AnalysisPanel() {
           limit={kappaLimit}
           limitLabel={t.min_radius_m ? `min R=${t.min_radius_m.toFixed(1)}m` : undefined}
           bands={bandsFor(["min_radius"], v)}
+          hoverExtra={(x) => (Math.abs(x) > 1e-9 ? `R=${(1 / Math.abs(x)).toFixed(1)}m` : "R=∞（直線）")}
           hoverIndex={hoverIndex}
           onHover={setHoverPoint}
         />
@@ -210,6 +211,7 @@ export function AnalysisPanel() {
             color="#7c3aed"
             xs={series.xs}
             ys={series.speed}
+            hoverExtra={(x) => `${(x * 3.6).toFixed(1)} km/h`}
             hoverIndex={hoverIndex}
             onHover={setHoverPoint}
           />
