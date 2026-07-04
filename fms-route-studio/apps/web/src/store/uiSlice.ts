@@ -1,5 +1,7 @@
-// UI 状態（工程・編集モード・ステータス・表示トグル・2D/3D ビュー）。
+// UI 状態（工程・編集モード・ステータス・表示トグル・2D/3D ビュー・計測）。
 import type { StateCreator } from "zustand";
+
+import type { XY } from "@/types/api";
 
 import type { AppState } from "./useStore";
 import type { EditMode, FeatureId, StatusLevel } from "./types";
@@ -23,6 +25,7 @@ export interface UiSlice {
   pointSize: number; // 点群の点サイズ[px]
   pointBudget: number; // 3D点群の表示点数上限（バイナリ転送で大点数可）
   vExag: number;   // 3Dの鉛直強調倍率
+  measurePts: XY[]; // 計測ツールの頂点列（mode==="measure" 中にクリックで追加）
 
   setActiveFeature: (f: FeatureId) => void;
   setMode: (mode: EditMode) => void;
@@ -40,6 +43,9 @@ export interface UiSlice {
   setPointSize: (v: number) => void;
   setPointBudget: (v: number) => void;
   setVExag: (v: number) => void;
+  addMeasurePt: (p: XY) => void;
+  undoMeasurePt: () => void;
+  clearMeasure: () => void;
 }
 
 export const createUiSlice: StateCreator<AppState, [], [], UiSlice> = (set) => ({
@@ -61,6 +67,7 @@ export const createUiSlice: StateCreator<AppState, [], [], UiSlice> = (set) => (
   pointSize: 2.0,
   pointBudget: 1_000_000,
   vExag: 1.0,
+  measurePts: [],
 
   // 工程を切り替えたら編集モードを中立(pan)へ戻す（前工程のモードが地図クリックに漏れるのを防ぐ）
   setActiveFeature: (activeFeature) =>
@@ -80,4 +87,7 @@ export const createUiSlice: StateCreator<AppState, [], [], UiSlice> = (set) => (
   setPointSize: (pointSize) => set({ pointSize }),
   setPointBudget: (pointBudget) => set({ pointBudget }),
   setVExag: (vExag) => set({ vExag }),
+  addMeasurePt: (p) => set((s) => ({ measurePts: [...s.measurePts, p] })),
+  undoMeasurePt: () => set((s) => ({ measurePts: s.measurePts.slice(0, -1) })),
+  clearMeasure: () => set({ measurePts: [] }),
 });

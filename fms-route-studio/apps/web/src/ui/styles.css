@@ -192,6 +192,13 @@ code { background: var(--surface-3); border: 1px solid var(--line); border-radiu
   max-width: calc(100% - 120px);
 }
 .map-modechip .mc-hint { font-weight: 400; opacity: 0.8; }
+.map-measure {
+  position: absolute; bottom: 44px; left: 14px; z-index: 5;
+  background: #ffffffee; border: 1px solid #cbd5e1; border-radius: 8px;
+  padding: 8px 10px; font-size: 12px; line-height: 1.7; min-width: 220px;
+  box-shadow: 0 2px 8px #0002;
+}
+.map-measure b { color: #0e7490; }
 /* データ未登録時のオンボーディング案内（地図中央） */
 .map-empty { position: absolute; inset: 0; z-index: 4; display: flex; align-items: center; justify-content: center; pointer-events: none; }
 .map-empty .me-card {

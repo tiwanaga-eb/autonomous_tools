@@ -9,6 +9,7 @@ export type EditMode =
   | "edit"
   | "pan"
   | "polygon"
+  | "measure"
   | "spot_start"
   | "spot_target"
   | "spot_switch"

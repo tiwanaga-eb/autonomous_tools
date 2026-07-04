@@ -2,7 +2,7 @@
 // feature の "kind" 属性 → Style の対応は overlayStyleFor() に集約する。
 import type Feature from "ol/Feature";
 import type { FeatureLike } from "ol/Feature";
-import { Circle as CircleStyle, Fill, Stroke, Style } from "ol/style";
+import { Circle as CircleStyle, Fill, Stroke, Style, Text } from "ol/style";
 
 export const ROUTE_STYLE = new Style({ stroke: new Stroke({ color: "#f59e0b", width: 3 }) });
 export const WPLINE_STYLE = new Style({ stroke: new Stroke({ color: "#ffffffaa", width: 2 }) });
@@ -55,6 +55,32 @@ export const FLEET_AUTOBAY_LINK_STYLE = new Style({ stroke: new Stroke({ color: 
 export const AREA_STYLE = new Style({
   fill: new Fill({ color: "#22c55e33" }),
   stroke: new Stroke({ color: "#22c55e", width: 2 }),
+});
+// エリアの名前＋面積ラベル（feature.get("label") を重心に表示）
+const _areaLabelCache = new Map<string, Style>();
+export function areaStyle(label: string | undefined): Style | Style[] {
+  if (!label) return AREA_STYLE;
+  let st = _areaLabelCache.get(label);
+  if (!st) {
+    st = new Style({
+      text: new Text({
+        text: label,
+        font: "12px system-ui, sans-serif",
+        fill: new Fill({ color: "#14532d" }),
+        stroke: new Stroke({ color: "#ffffffcc", width: 3 }),
+        overflow: true,
+      }),
+    });
+    _areaLabelCache.set(label, st);
+    if (_areaLabelCache.size > 512) _areaLabelCache.clear(); // 名称変更で無限に増えないように
+  }
+  return [AREA_STYLE, st];
+}
+// 計測ツール（距離・面積）: シアンの実線＋閉じ線は点線
+export const MEASURE_LINE_STYLE = new Style({ stroke: new Stroke({ color: "#0891b2", width: 2.5 }) });
+export const MEASURE_CLOSE_STYLE = new Style({ stroke: new Stroke({ color: "#0891b2aa", width: 1.5, lineDash: [6, 5] }) });
+export const MEASURE_VERTEX_STYLE = new Style({
+  image: new CircleStyle({ radius: 4, fill: new Fill({ color: "#0891b2" }), stroke: new Stroke({ color: "#ffffff", width: 1.5 }) }),
 });
 export const ACTIVE_POLY_STYLE = new Style({
   stroke: new Stroke({ color: "#fbbf24", width: 2, lineDash: [6, 4] }),
@@ -167,7 +193,7 @@ export const HEADING_PREVIEW_STYLE = new Style({
 });
 
 /** feature.get("kind") → Style の一元ディスパッチ（overlay/fleet-sim 両レイヤで共用）。 */
-export function overlayStyleFor(feature: FeatureLike): Style | undefined {
+export function overlayStyleFor(feature: FeatureLike): Style | Style[] | undefined {
   const f = feature as Feature;
   const kind = f.get("kind");
   if (kind === "waypoint") return waypointStyle(f.get("role"));
@@ -203,8 +229,11 @@ export function overlayStyleFor(feature: FeatureLike): Style | undefined {
   if (kind === "fleetautobaylink") return FLEET_AUTOBAY_LINK_STYLE;
   if (kind === "pilebase") return PILE_BASE_STYLE;
   if (kind === "pilecenter") return PILE_CENTER_STYLE;
-  if (kind === "area") return AREA_STYLE;
+  if (kind === "area") return areaStyle(f.get("label"));
   if (kind === "activepoly") return ACTIVE_POLY_STYLE;
   if (kind === "polyvertex") return POLY_VERTEX_STYLE;
+  if (kind === "measureline") return MEASURE_LINE_STYLE;
+  if (kind === "measureclose") return MEASURE_CLOSE_STYLE;
+  if (kind === "measurevertex") return MEASURE_VERTEX_STYLE;
   return undefined;
 }

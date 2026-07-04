@@ -31,6 +31,7 @@ import type { VehShape } from "@/map/overlayGeom";
 import { FLEET_COLORS, overlayStyleFor } from "@/map/overlayStyles";
 import { downloadDataUrl, timestampName } from "@/exporters";
 import { pickLayer } from "@/layerSelect";
+import { fmtArea, fmtLength, polygonArea, polylineLength } from "@/measure";
 import { useStore } from "@/store/useStore";
 
 
@@ -40,6 +41,7 @@ const MODE_LABELS: Record<string, string> = {
   edit: "点を編集（ドラッグ）", pan: "移動（パン）", polygon: "ポリゴン描画",
   spot_start: "寄り付き 開始姿勢", spot_target: "寄り付き 目標姿勢",
   spot_switch: "切り返し点", spot_exit_goal: "退出Goal",
+  measure: "計測（距離・面積）",
 };
 const POSE_MODE_SET = new Set([
   "start", "goal", "spot_start", "spot_target", "spot_switch", "spot_exit_goal",
@@ -98,6 +100,7 @@ export function MapView() {
   const fleetSimT = useStore((s) => s.fleetSimT);
   const fleetBays = useStore((s) => s.fleetBays);
   const pilePlan = useStore((s) => s.pilePlan);
+  const measurePts = useStore((s) => s.measurePts);
 
   // 選択車両の寸法＋運動学（ホバー点の車両形状描画用: アーティキュレート2矩形 / アッカーマン操舵輪）。
   const [vehDims, setVehDims] = useState<VehShape | null>(null);
@@ -192,6 +195,8 @@ export function MapView() {
         dispatch({ type: "INSERT_VIA", xy });
       } else if (st.mode === "polygon") {
         dispatch({ type: "ADD_POLY_VERTEX", xy });
+      } else if (st.mode === "measure") {
+        st.addMeasurePt(xy);
       }
     };
     viewport.addEventListener("click", onClick);
@@ -397,6 +402,8 @@ export function MapView() {
         ring.push(ring[0]);
         const f = new Feature(new Polygon([ring]));
         f.set("kind", "area");
+        // 名前＋面積のラベル（overlayStyles.areaStyle が Text として描画）
+        f.set("label", `${a.name}\n${fmtArea(polygonArea(a.points))}`);
         f.setId(a.id); // edit モードの Modify で頂点移動を元エリアへ反映するため
         src.addFeature(f);
       }
@@ -532,6 +539,28 @@ export function MapView() {
       src.addFeature(f);
     });
 
+    // 計測ツール（距離・面積）: 折れ線＋頂点、3点以上は閉じ線（面積対象）を点線で描画
+    if (measurePts.length >= 2) {
+      const line = new Feature(new LineString(measurePts.map((p) => [p.x, p.y])));
+      line.set("kind", "measureline");
+      src.addFeature(line);
+    }
+    if (measurePts.length >= 3) {
+      const close = new Feature(
+        new LineString([
+          [measurePts[measurePts.length - 1].x, measurePts[measurePts.length - 1].y],
+          [measurePts[0].x, measurePts[0].y],
+        ]),
+      );
+      close.set("kind", "measureclose");
+      src.addFeature(close);
+    }
+    measurePts.forEach((p) => {
+      const f = new Feature(new Point([p.x, p.y]));
+      f.set("kind", "measurevertex");
+      src.addFeature(f);
+    });
+
     // 寄り付き: start/target 姿勢（点＋方位矢印）
     const spotPose = (pose: { x: number; y: number; heading_deg: number } | null, role: string) => {
       if (!pose) return;
@@ -641,7 +670,7 @@ export function MapView() {
         src.addFeature(f);
       }
     }
-  }, [waypoints, route, areas, activePolygon, importedRoutes, roadWidthM, vehDims, showWaypoints, spotStart, spotTarget, spotSwitchPose, spotSwitchZoneId, spotContainAreaId, spotExitGoal, spotRoadWidthM, spotResult, layers, drivableLayerId, savedRoutes, showSavedRoutes, fleetConflicts, activeFeature, fleetBays, pilePlan]);
+  }, [waypoints, route, areas, activePolygon, importedRoutes, roadWidthM, vehDims, showWaypoints, spotStart, spotTarget, spotSwitchPose, spotSwitchZoneId, spotContainAreaId, spotExitGoal, spotRoadWidthM, spotResult, layers, drivableLayerId, savedRoutes, showSavedRoutes, fleetConflicts, activeFeature, fleetBays, pilePlan, measurePts]);
 
   // ---- スクリーンキャプチャ: 全レイヤの canvas を1枚に合成して PNG 保存（OL公式パターン） ----
   useEffect(() => {
@@ -823,7 +852,7 @@ export function MapView() {
     vp.style.cursor =
       mode === "pan" ? "grab"
       : mode === "edit" ? "pointer"
-      : POSE_MODE_SET.has(mode) || mode === "polygon" || mode === "insert_via" || mode === "via" ? "crosshair"
+      : POSE_MODE_SET.has(mode) || mode === "polygon" || mode === "measure" || mode === "insert_via" || mode === "via" ? "crosshair"
       : "default";
   }, [mode]);
 
@@ -872,7 +901,19 @@ export function MapView() {
         {MODE_LABELS[mode] ?? mode}
         {POSE_MODE_SET.has(mode) && <span className="mc-hint"> ・ クリック=位置 / 左ドラッグ=方位 / 右ドラッグ=移動</span>}
         {mode === "polygon" && <span className="mc-hint"> ・ クリックで頂点追加</span>}
+        {mode === "measure" && <span className="mc-hint"> ・ クリックで計測点追加 / Backspace=1点戻す / Esc=クリア</span>}
       </div>
+      {mode === "measure" && (
+        <div className="map-measure">
+          <b>📏 計測</b>
+          <div>距離: {measurePts.length >= 2 ? fmtLength(polylineLength(measurePts)) : "—（2点以上）"}</div>
+          <div>面積: {measurePts.length >= 3 ? fmtArea(polygonArea(measurePts)) : "—（3点以上で閉じて計算）"}</div>
+          <div className="row" style={{ marginTop: 4 }}>
+            <button onClick={() => useStore.getState().undoMeasurePt()} disabled={measurePts.length === 0}>1点戻す</button>
+            <button onClick={() => useStore.getState().clearMeasure()} disabled={measurePts.length === 0}>クリア</button>
+          </div>
+        </div>
+      )}
       <div className="map-toolbar">
         <button onClick={() => zoomBy(1)} title="ズームイン">
           ＋

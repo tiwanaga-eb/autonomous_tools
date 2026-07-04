@@ -70,6 +70,7 @@ export function App() {
   const setPointSize = useStore((s) => s.setPointSize);
   const pointBudget = useStore((s) => s.pointBudget);
   const setPointBudget = useStore((s) => s.setPointBudget);
+  const mode = useStore((s) => s.mode);
 
   useEffect(() => {
     api
@@ -98,6 +99,17 @@ export function App() {
         } else if (e.key === "Backspace") {
           e.preventDefault();
           dispatch({ type: "UNDO_POLY_VERTEX" });
+        }
+      }
+      // 計測中: Esc=クリアして終了 / Backspace=1点戻す
+      if (useStore.getState().mode === "measure") {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          useStore.getState().clearMeasure();
+          useStore.getState().setMode("pan");
+        } else if (e.key === "Backspace") {
+          e.preventDefault();
+          useStore.getState().undoMeasurePt();
         }
       }
     };
@@ -207,6 +219,23 @@ export function App() {
                 </>
               )}
             </>
+          )}
+          {!view3d && (
+            <button
+              data-active={mode === "measure"}
+              onClick={() => {
+                const s = useStore.getState();
+                if (s.mode === "measure") {
+                  s.clearMeasure();
+                  s.setMode("pan");
+                } else {
+                  s.setMode("measure");
+                }
+              }}
+              title="距離・面積の計測。クリックで点を追加（2点以上=距離、3点以上=閉じた面積）。Backspace=1点戻す / Esc=終了"
+            >
+              📏 計測
+            </button>
           )}
           <button
             onClick={() => window.dispatchEvent(new CustomEvent("frs:capture"))}
