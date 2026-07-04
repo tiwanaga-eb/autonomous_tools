@@ -43,12 +43,19 @@ export function Sidebar() {
   const setActive = useStore((s) => s.setActiveFeature);
   const layers = useStore((s) => s.layers);
   const route = useStore((s) => s.route);
+  const spotResult = useStore((s) => s.spotResult);
+  const pilePlan = useStore((s) => s.pilePlan);
+  const fleetConflicts = useStore((s) => s.fleetConflicts);
+  const fleetSim = useStore((s) => s.fleetSim);
 
-  // 工程の進捗ドット（データ/マップ/経路ができているか）
+  // 工程の進捗ドット（データ/マップ/経路/寄り付き/排土/複数台の成果物があるか）
   const dot: Partial<Record<FeatureId, boolean>> = {
     data: layers.some((l) => l.kind === "las" || l.kind === "ortho"),
     map: layers.some((l) => l.kind === "cost" || l.kind === "drivable"),
     route: !!route,
+    spotting: !!spotResult,
+    piles: !!pilePlan,
+    fleet: !!fleetConflicts || !!fleetSim,
   };
 
   return (

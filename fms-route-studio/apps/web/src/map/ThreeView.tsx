@@ -505,10 +505,13 @@ export function ThreeView() {
     let cancelled = false;
     const ac = new AbortController();
     (async () => {
+      // 大規模点群（数百万点）は取得〜GPU転送に数秒かかるため busy 表示を出す
+      const gBusy = useStore.getState().setBusy;
+      if (lasLayer) gBusy(true, `3D点群を読込中…（上限 ${pointBudget.toLocaleString()} 点）`);
       const [grid, pts] = await Promise.all([
         costLayer ? api.dsmGrid(costLayer.id, 240, ac.signal).catch(() => null) : Promise.resolve(null),
         lasLayer ? api.layerPointsBin(lasLayer.id, pointBudget, ac.signal).catch(() => null) : Promise.resolve(null),
-      ]);
+      ]).finally(() => gBusy(false));
       if (cancelled || !st.current) return;
       s.grid = grid; s.pts = pts;
       if (grid) {
