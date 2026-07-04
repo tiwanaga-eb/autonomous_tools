@@ -2,6 +2,7 @@
 import { api } from "@/api/client";
 import { useStore } from "@/store/useStore";
 import { runBusy } from "@/ui/busy";
+import { NumberField } from "@/ui/NumberField";
 
 export function PilePanel() {
   const areas = useStore((s) => s.areas);
@@ -96,18 +97,17 @@ export function PilePanel() {
         {sizeMode === "volume" ? (
           <label>
             パイル体積 (m³)
-            <input type="number" step="1" min="0.1" value={volumeM3} onChange={(e) => setVolumeM3(Math.max(0.1, +e.target.value))} />
+            <NumberField value={volumeM3} onCommit={setVolumeM3} step={0.5} min={0.1} max={500} />
           </label>
         ) : (
           <label>
             パイル高さ (m)
-            <input type="number" step="0.1" min="0.1" value={heightM} onChange={(e) => setHeightM(Math.max(0.1, +e.target.value))} />
+            <NumberField value={heightM} onCommit={setHeightM} step={0.1} min={0.1} max={20} />
           </label>
         )}
         <label title="材料の安息角（法面が自然に安定する角度）。土砂 30〜40° 程度">
           安息角 (°)
-          <input type="number" step="1" min="5" max="60" value={reposeDeg}
-                 onChange={(e) => setReposeDeg(Math.min(60, Math.max(5, +e.target.value)))} />
+          <NumberField value={reposeDeg} onCommit={setReposeDeg} step={1} min={5} max={60} />
         </label>
         <label title="間隔指定: 縦横の間隔で端から敷き詰め。撒き出し: 体積と撒き出し厚から間隔・数を自動計算">
           配置方法
@@ -120,28 +120,28 @@ export function PilePanel() {
           <>
             <label>
               間隔 横 (m)
-              <input type="number" step="0.5" min="0.5" value={dx} onChange={(e) => setDx(Math.max(0.5, +e.target.value))} />
+              <NumberField value={dx} onCommit={setDx} step={0.5} min={0.5} max={200} />
             </label>
             <label title="0 = 横と同じ間隔">
               間隔 縦 (m)（0=横と同じ）
-              <input type="number" step="0.5" min="0" value={dy} onChange={(e) => setDy(Math.max(0, +e.target.value))} />
+              <NumberField value={dy} onCommit={setDy} step={0.5} min={0} max={200} />
             </label>
           </>
         ) : (
           <>
             <label title="1パイル(V)を厚tで均すと面積V/tをカバー → 理論数⌊A·t/V⌋。間隔は 横×縦=V/t を満たすように決まる">
               撒き出し厚 t (m)
-              <input type="number" step="0.1" min="0.1" value={spreadT} onChange={(e) => setSpreadT(Math.max(0.1, +e.target.value))} />
+              <NumberField value={spreadT} onCommit={setSpreadT} step={0.05} min={0.05} max={5} />
             </label>
             <label title="横間隔を基準に指定すると、縦間隔は (V÷t)÷横 で自動計算されます（横×縦=カバー面積を厳密に維持）。0=正方格子 √(V/t)">
               横間隔 (m)（基準・0=自動）
-              <input type="number" step="0.5" min="0" value={spreadDx} onChange={(e) => setSpreadDx(Math.max(0, +e.target.value))} />
+              <NumberField value={spreadDx} onCommit={setSpreadDx} step={0.5} min={0} max={200} />
             </label>
           </>
         )}
         <label title="エリアの縁から中心までの最小距離。-1=自動（パイル基部がエリア内に収まる=基部半径）">
           縁マージン (m)（-1=自動）
-          <input type="number" step="0.5" min="-1" value={edgeMargin} onChange={(e) => setEdgeMargin(+e.target.value)} />
+          <NumberField value={edgeMargin} onCommit={setEdgeMargin} step={0.5} min={-1} max={100} />
         </label>
       </div>
       <label title="1行おきに半間隔ずらす配置。「逆」はずらす行を反転（斜めの向きが逆になる）">

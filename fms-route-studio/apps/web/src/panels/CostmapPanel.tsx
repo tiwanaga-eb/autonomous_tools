@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/api/client";
 import { WORKING_EPSG } from "@/map/proj";
 import { useStore } from "@/store/useStore";
+import { NumberField } from "@/ui/NumberField";
 
 // 設計書 §11: LAS → 生cost(float32) + DSM + 表示RGB を生成し、cost レイヤとして重畳。
 // LASの読み込みは「データ（レイヤ）」で行い、ここでは登録済みLASを選んで生成する。
@@ -93,15 +94,15 @@ export function CostmapPanel() {
       <div className="grid2">
         <label>
           grid (m)
-          <input type="number" step="0.1" value={gridSize} onChange={(e) => setGridSize(+e.target.value)} />
+          <NumberField value={gridSize} onCommit={setGridSize} step={0.1} min={0.05} max={10} />
         </label>
         <label>
           slope limit (°)
-          <input type="number" step="1" value={slopeLimit} onChange={(e) => setSlopeLimit(+e.target.value)} />
+          <NumberField value={slopeLimit} onCommit={setSlopeLimit} step={1} min={1} max={45} />
         </label>
         <label>
           veg ref (m)
-          <input type="number" step="0.5" value={canopyRef} onChange={(e) => setCanopyRef(+e.target.value)} />
+          <NumberField value={canopyRef} onCommit={setCanopyRef} step={0.5} min={0} max={20} />
         </label>
         <label title="LAS座標のCRS。自動=ヘッダのCRSを使用（無ければ経緯度らしき値ならWGS84と推定、それ以外は作業ゾーンのまま）。WGS84のLASもここが「自動」か「WGS84」なら作業ゾーンへ変換されます">
           LASのCRS
@@ -122,20 +123,20 @@ export function CostmapPanel() {
         {srcEpsg !== 0 && srcEpsg !== 4326 && srcEpsg !== WORKING_EPSG && (
           <label>
             EPSG コード
-            <input type="number" step="1" min="1000" value={srcEpsg} onChange={(e) => setSrcEpsg(+e.target.value)} />
+            <NumberField value={srcEpsg} onCommit={setSrcEpsg} step={1} min={1000} max={99999} />
           </label>
         )}
         <label>
           w_slope（傾斜重み）
-          <input type="number" step="50" value={wSlope} onChange={(e) => setWSlope(+e.target.value)} />
+          <NumberField value={wSlope} onCommit={setWSlope} step={50} min={0} max={10000} />
         </label>
         <label>
           w_rough（粗さ重み）
-          <input type="number" step="25" value={wRough} onChange={(e) => setWRough(+e.target.value)} />
+          <NumberField value={wRough} onCommit={setWRough} step={25} min={0} max={10000} />
         </label>
         <label>
           rough window (m)
-          <input type="number" step="0.5" value={roughWindow} onChange={(e) => setRoughWindow(+e.target.value)} />
+          <NumberField value={roughWindow} onCommit={setRoughWindow} step={0.5} min={0.1} max={20} />
         </label>
       </div>
       <div className="row" style={{ marginTop: 6 }}>

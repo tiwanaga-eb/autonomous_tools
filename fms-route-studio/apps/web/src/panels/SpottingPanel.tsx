@@ -1,4 +1,3 @@
-import type { ChangeEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "@/api/client";
@@ -6,6 +5,7 @@ import { dispatch } from "@/commandBus";
 import { pickLayer } from "@/layerSelect";
 import { useStore } from "@/store/useStore";
 import type { SpottingMethod, Vehicle } from "@/types/api";
+import { NumberField } from "@/ui/NumberField";
 
 // 設計書 §13: エリア内の寄り付き（切り返し 0/1）。ターゲット姿勢へ低速マニューバを生成・再生。
 export function SpottingPanel() {
@@ -62,8 +62,6 @@ export function SpottingPanel() {
   const drivable = pickLayer(layers, "drivable", drivableLayerId);
   const costLayer = pickLayer(layers, "cost", costLayerId);
   const W = spotWeights;
-  const setW = (k: keyof typeof W) => (e: ChangeEvent<HTMLInputElement>) =>
-    setSpotWeights({ ...W, [k]: Math.max(0, +e.target.value) }); // 負の重みはコスト関数を壊すため 0 でクランプ
   // 方位入力は [0,360) に正規化（-5 → 355 のラップ挙動。スピナーでも一周できる）
   const wrapDeg = (v: number) => ((v % 360) + 360) % 360;
   const playRef = useRef<number | null>(null);
@@ -208,22 +206,24 @@ export function SpottingPanel() {
       <div className="grid2">
         <label>
           Start方位 (°)
-          <input
-            type="number"
-            step="5"
+          <NumberField
             value={spotStart ? Math.round(spotStart.heading_deg) : 0}
+            step={5}
+            min={-360}
+            max={720}
             disabled={!spotStart}
-            onChange={(e) => spotStart && setSpotStart({ ...spotStart, heading_deg: wrapDeg(+e.target.value) })}
+            onCommit={(v) => spotStart && setSpotStart({ ...spotStart, heading_deg: wrapDeg(v) })}
           />
         </label>
         <label>
           Target方位 (°)
-          <input
-            type="number"
-            step="5"
+          <NumberField
             value={spotTarget ? Math.round(spotTarget.heading_deg) : 0}
+            step={5}
+            min={-360}
+            max={720}
             disabled={!spotTarget}
-            onChange={(e) => spotTarget && setSpotTarget({ ...spotTarget, heading_deg: wrapDeg(+e.target.value) })}
+            onCommit={(v) => spotTarget && setSpotTarget({ ...spotTarget, heading_deg: wrapDeg(v) })}
           />
         </label>
       </div>
@@ -252,8 +252,7 @@ export function SpottingPanel() {
         </label>
         <label title="出発/到着/切り返し点の付近以外で保つ最低速度[km/h]。クロール（過減速）を防ぐ。0=無効。付近は停止のため自動で減速します。">
           最低速度 (km/h)
-          <input type="number" min={0} max={20} step={1} value={spotMinSpeedKmh}
-                 onChange={(e) => setSpotMinSpeedKmh(Math.max(0, +e.target.value))} />
+          <NumberField value={spotMinSpeedKmh} onCommit={setSpotMinSpeedKmh} step={1} min={0} max={20} />
         </label>
         <label title="「あり」を選ぶと通常は1回の切り返しで寄り付き、狭いエリアでは自動的に複数回の切り返し（多点ターン）で車体を収めます">
           切り返し
@@ -264,13 +263,7 @@ export function SpottingPanel() {
         </label>
         <label title="0 のときは選択車両の車幅で道幅帯を表示。>0 で要求クリアランス=道幅/2 にもなる">
           道幅 (m)（0=車幅で表示）
-          <input
-            type="number"
-            step="0.5"
-            min="0"
-            value={spotRoadWidthM}
-            onChange={(e) => setSpotRoadWidthM(+e.target.value)}
-          />
+          <NumberField value={spotRoadWidthM} onCommit={setSpotRoadWidthM} step={0.5} min={0} max={100} />
         </label>
         <label title="選択すると、経路＋車体（フットプリント）がこのエリア内に収まるよう制約します（外は走行不可）。エリアは「エリア」機能で作成。走行可能レイヤがあればAND（両方の内側）。">
           走行を収めるエリア（はみ出し禁止・任意）
@@ -300,11 +293,12 @@ export function SpottingPanel() {
           {spotSwitchPose && (
             <label style={{ marginTop: 4 }}>
               切り返し点 方位 (°)
-              <input
-                type="number"
-                step="5"
+              <NumberField
                 value={Math.round(spotSwitchPose.heading_deg)}
-                onChange={(e) => setSpotSwitchPose({ ...spotSwitchPose, heading_deg: wrapDeg(+e.target.value) })}
+                step={5}
+                min={-360}
+                max={720}
+                onCommit={(v) => setSpotSwitchPose({ ...spotSwitchPose, heading_deg: wrapDeg(v) })}
               />
             </label>
           )}
@@ -319,12 +313,12 @@ export function SpottingPanel() {
           </label>
           <label style={{ marginTop: 4 }}>
             切り返し直線マージン (m)（0=自動）
-            <input
-              type="number"
-              step="0.5"
-              min="0"
+            <NumberField
               value={spotCuspMargin}
-              onChange={(e) => setSpotCuspMargin(+e.target.value)}
+              onCommit={setSpotCuspMargin}
+              step={0.5}
+              min={0}
+              max={50}
               title="切り返し点の前後に入れる直線距離。ステアを0°にしてから前後反転するため、経路を追従できる"
             />
           </label>
@@ -377,12 +371,12 @@ export function SpottingPanel() {
           title="蛇行を抑え直線的に（クネクネ低減）">直線的に</button>
       </div>
       <div className="grid2">
-        <label>距離<input type="number" step="0.5" min="0" value={W.w_distance} onChange={setW("w_distance")} /></label>
-        <label>時間<input type="number" step="0.5" min="0" value={W.w_time} onChange={setW("w_time")} /></label>
-        <label>後進距離<input type="number" step="0.5" min="0" value={W.w_reverse} onChange={setW("w_reverse")} /></label>
-        <label>切り返し<input type="number" step="1" min="0" value={W.w_switchback} onChange={setW("w_switchback")} /></label>
-        <label>コストマップ<input type="number" step="0.5" min="0" value={W.w_costmap} onChange={setW("w_costmap")} /></label>
-        <label>旋回(蛇行抑制)<input type="number" step="1" min="0" value={W.w_turn} onChange={setW("w_turn")} /></label>
+        <label>距離<NumberField value={W.w_distance} onCommit={(v) => setSpotWeights({ ...W, w_distance: v })} step={0.5} min={0} max={100} /></label>
+        <label>時間<NumberField value={W.w_time} onCommit={(v) => setSpotWeights({ ...W, w_time: v })} step={0.5} min={0} max={100} /></label>
+        <label>後進距離<NumberField value={W.w_reverse} onCommit={(v) => setSpotWeights({ ...W, w_reverse: v })} step={0.5} min={0} max={100} /></label>
+        <label>切り返し<NumberField value={W.w_switchback} onCommit={(v) => setSpotWeights({ ...W, w_switchback: v })} step={1} min={0} max={100} /></label>
+        <label>コストマップ<NumberField value={W.w_costmap} onCommit={(v) => setSpotWeights({ ...W, w_costmap: v })} step={0.5} min={0} max={100} /></label>
+        <label>旋回(蛇行抑制)<NumberField value={W.w_turn} onCommit={(v) => setSpotWeights({ ...W, w_turn: v })} step={1} min={0} max={100} /></label>
       </div>
       <div className="row" style={{ marginTop: 6 }}>
         <button className="primary" onClick={simulate} disabled={!spotStart || !spotTarget || busy}>

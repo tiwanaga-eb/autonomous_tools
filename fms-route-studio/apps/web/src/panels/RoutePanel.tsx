@@ -8,6 +8,7 @@ import { useStore } from "@/store/useStore";
 import type { EditMode } from "@/store/useStore";
 import type { Trajectory, Vehicle } from "@/types/api";
 import { errMessage, runBusy } from "@/ui/busy";
+import { NumberField } from "@/ui/NumberField";
 
 const MODES: { mode: EditMode; label: string }[] = [
   { mode: "start", label: "Start" },
@@ -284,11 +285,11 @@ export function RoutePanel() {
       <div className="grid2">
         <label>
           点間隔 (m)
-          <input type="number" step="0.5" min="0.1" value={routeSpacing} onChange={(e) => setRouteSpacing(+e.target.value)} />
+          <NumberField value={routeSpacing} onCommit={setRouteSpacing} step={0.5} min={0.1} max={50} />
         </label>
         <label title="0 のときは選択車両の車幅で道幅帯を表示。>0 で A* が領域内に確保する道幅にもなる">
           道幅 (m)（0=車幅で表示）
-          <input type="number" step="0.5" min="0" value={roadWidthM} onChange={(e) => setRoadWidthM(+e.target.value)} />
+          <NumberField value={roadWidthM} onCommit={setRoadWidthM} step={0.5} min={0} max={100} />
         </label>
       </div>
       <label className="slider" style={{ flexDirection: "row", gap: 6, alignItems: "center" }}>
