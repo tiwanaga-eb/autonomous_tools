@@ -4,7 +4,7 @@
 import { api } from "@/api/client";
 import { WORKING_EPSG } from "@/map/proj";
 import { useStore } from "@/store/useStore";
-import type { XY } from "@/types/api";
+import type { PilePlanResult, XY } from "@/types/api";
 
 const WGS84 = 4326;
 
@@ -16,6 +16,21 @@ function download(filename: string, text: string, mime: string): void {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+/** data URL（スクリーンキャプチャ等）をファイル保存する。 */
+export function downloadDataUrl(filename: string, dataUrl: string): void {
+  const a = document.createElement("a");
+  a.href = dataUrl;
+  a.download = filename;
+  a.click();
+}
+
+/** キャプチャ等のファイル名用タイムスタンプ（ローカル時刻 YYYYMMDD-HHMMSS）。 */
+export function timestampName(prefix: string, ext: string): string {
+  const d = new Date();
+  const p = (v: number) => String(v).padStart(2, "0");
+  return `${prefix}_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.${ext}`;
 }
 
 async function toLngLat(pts: XY[]): Promise<[number, number][]> {
@@ -132,6 +147,81 @@ export async function exportAllRoutesSeparate(): Promise<number> {
     await new Promise((res) => setTimeout(res, 150)); // 連続ダウンロードの取りこぼし回避
   }
   return usable.length;
+}
+
+// ---- 排土（パイル配置） ----
+/** パイル配置の CSV 行（純粋関数・テスト用に分離）。座標は作業CRS[m]。 */
+export function pilesCsvRows(plan: PilePlanResult): (string | number | null)[][] {
+  const header = ["no", "x", "y", "height_m", "radius_m", "volume_m3", "repose_deg", "dx_m", "dy_m"];
+  const rows = plan.centers.map(([x, y], i) => [
+    i + 1, x.toFixed(3), y.toFixed(3),
+    plan.pile.height_m, plan.pile.radius_m, plan.pile.volume_m3, plan.pile.repose_deg,
+    plan.spacing.dx_m, plan.spacing.dy_m,
+  ]);
+  return [header, ...rows];
+}
+
+export function exportPilesCsv(): boolean {
+  const plan = useStore.getState().pilePlan;
+  if (!plan || plan.centers.length === 0) return false;
+  download("piles.csv", csv(pilesCsvRows(plan)), "text/csv");
+  return true;
+}
+
+export async function exportPilesGeoJson(): Promise<boolean> {
+  const plan = useStore.getState().pilePlan;
+  if (!plan || plan.centers.length === 0) return false;
+  const coords = await toLngLat(plan.centers.map(([x, y]) => ({ x, y })));
+  const features = coords.map((c, i) => ({
+    type: "Feature",
+    properties: {
+      kind: "pile",
+      no: i + 1,
+      x: plan.centers[i][0],           // 作業CRS座標も残す（現場座標で扱う下流向け）
+      y: plan.centers[i][1],
+      height_m: plan.pile.height_m,
+      radius_m: plan.pile.radius_m,
+      volume_m3: plan.pile.volume_m3,
+      repose_deg: plan.pile.repose_deg,
+      source_crs: `EPSG:${WORKING_EPSG}`,
+    },
+    geometry: { type: "Point", coordinates: c },
+  }));
+  const fc = {
+    type: "FeatureCollection",
+    // 計画メタ（foreign member。QGIS等は無視して読める）
+    pile_plan: {
+      count: plan.count,
+      spacing: plan.spacing,
+      grid_angle_deg: plan.grid_angle_deg,
+      edge_margin_m: plan.edge_margin_m,
+      area_m2: plan.area_m2,
+      total_volume_m3: plan.total_volume_m3,
+      n_theory: plan.n_theory,
+      suggested_spacing_m: plan.suggested_spacing_m,
+    },
+    features,
+  };
+  download("piles.geojson", JSON.stringify(fc, null, 2), "application/geo+json");
+  return true;
+}
+
+// ---- エリア（多角形） ----
+export async function exportAreasGeoJson(): Promise<boolean> {
+  const areas = useStore.getState().areas.filter((a) => a.points.length >= 3);
+  if (areas.length === 0) return false;
+  const features: unknown[] = [];
+  for (const a of areas) {
+    const ring = await toLngLat(a.points);
+    ring.push(ring[0]);
+    features.push({
+      type: "Feature",
+      properties: { kind: "area", name: a.name, source_crs: `EPSG:${WORKING_EPSG}` },
+      geometry: { type: "Polygon", coordinates: [ring] },
+    });
+  }
+  download("areas.geojson", JSON.stringify({ type: "FeatureCollection", features }, null, 2), "application/geo+json");
+  return true;
 }
 
 // ---- 寄り付き（spotting） ----

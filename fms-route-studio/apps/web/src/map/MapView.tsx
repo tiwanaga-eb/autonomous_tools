@@ -29,6 +29,7 @@ import { WORKING_CRS, WORKING_EPSG } from "@/map/proj";
 import { arrowGeom, bayPointAt, offsetEdges, vehicleShapeRings } from "@/map/overlayGeom";
 import type { VehShape } from "@/map/overlayGeom";
 import { FLEET_COLORS, overlayStyleFor } from "@/map/overlayStyles";
+import { downloadDataUrl, timestampName } from "@/exporters";
 import { pickLayer } from "@/layerSelect";
 import { useStore } from "@/store/useStore";
 
@@ -641,6 +642,54 @@ export function MapView() {
       }
     }
   }, [waypoints, route, areas, activePolygon, importedRoutes, roadWidthM, vehDims, showWaypoints, spotStart, spotTarget, spotSwitchPose, spotSwitchZoneId, spotContainAreaId, spotExitGoal, spotRoadWidthM, spotResult, layers, drivableLayerId, savedRoutes, showSavedRoutes, fleetConflicts, activeFeature, fleetBays, pilePlan]);
+
+  // ---- スクリーンキャプチャ: 全レイヤの canvas を1枚に合成して PNG 保存（OL公式パターン） ----
+  useEffect(() => {
+    const onCapture = () => {
+      const map = mapRef.current;
+      const container = containerRef.current;
+      if (!map || !container) return;
+      map.once("rendercomplete", () => {
+        const size = map.getSize();
+        if (!size) return;
+        // OL 公式の map-export パターン: 各レイヤ canvas を style.transform で合成（CSSピクセル基準）
+        const out = document.createElement("canvas");
+        out.width = size[0];
+        out.height = size[1];
+        const ctx = out.getContext("2d");
+        if (!ctx) return;
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, out.width, out.height);
+        container.querySelectorAll<HTMLCanvasElement>(".ol-layer canvas, canvas.ol-layer").forEach((cv) => {
+          if (cv.width === 0) return;
+          const parent = cv.parentNode as HTMLElement | null;
+          const opacity = parent?.style.opacity || cv.style.opacity;
+          ctx.globalAlpha = opacity === "" ? 1 : Number(opacity);
+          const tf = cv.style.transform;
+          let m = tf ? tf.match(/^matrix\(([^(]*)\)$/)?.[1].split(",").map(Number) : undefined;
+          if (!m || m.length !== 6) {
+            const sx = (parseFloat(cv.style.width) || out.width) / cv.width;
+            const sy = (parseFloat(cv.style.height) || out.height) / cv.height;
+            m = [sx, 0, 0, sy, 0, 0];
+          }
+          ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
+          const bg = parent?.style.backgroundColor;
+          if (bg) {
+            ctx.fillStyle = bg;
+            ctx.fillRect(0, 0, cv.width, cv.height);
+          }
+          ctx.drawImage(cv, 0, 0);
+        });
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.globalAlpha = 1;
+        downloadDataUrl(timestampName("map", "png"), out.toDataURL("image/png"));
+        useStore.getState().setStatus("地図をキャプチャしました（PNG保存）", "success");
+      });
+      map.renderSync();
+    };
+    window.addEventListener("frs:capture", onCapture);
+    return () => window.removeEventListener("frs:capture", onCapture);
+  }, []);
 
   // ---- Fleet 再生（現在時刻 fleetSimT の各車位置）: 毎フレーム変わるため専用ソースだけを更新 ----
   useEffect(() => {

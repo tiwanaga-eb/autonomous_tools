@@ -208,6 +208,12 @@ export function App() {
               )}
             </>
           )}
+          <button
+            onClick={() => window.dispatchEvent(new CustomEvent("frs:capture"))}
+            title="表示中のビュー（2D地図 / 3D）をPNG画像として保存"
+          >
+            📷 キャプチャ
+          </button>
         </div>
         {view3d ? <ThreeView /> : <MapView />}
         {busy && (

@@ -3,6 +3,9 @@ import { useRef, useState } from "react";
 import {
   exportAllRoutesGeoJson,
   exportAllRoutesSeparate,
+  exportAreasGeoJson,
+  exportPilesCsv,
+  exportPilesGeoJson,
   exportRouteCsv,
   exportRouteGeoJson,
   exportSpottingCsv,
@@ -16,6 +19,8 @@ export function IOPanel() {
   const route = useStore((s) => s.route);
   const spotResult = useStore((s) => s.spotResult);
   const savedRoutes = useStore((s) => s.savedRoutes);
+  const pilePlan = useStore((s) => s.pilePlan);
+  const areas = useStore((s) => s.areas);
   const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
 
@@ -109,7 +114,22 @@ export function IOPanel() {
           Spotting GeoJSON
         </button>
       </div>
-      <p className="hint">CSV=6677メートル座標 / GeoJSON=WGS84(lng,lat)。</p>
+      <p className="hint" style={{ marginTop: 6 }}>排土（パイル配置）</p>
+      <div className="row wrap">
+        <button onClick={() => guard(exportPilesCsv(), "排土CSV")} disabled={!pilePlan}>
+          Piles CSV
+        </button>
+        <button onClick={async () => guard(await exportPilesGeoJson(), "排土GeoJSON")} disabled={!pilePlan}>
+          Piles GeoJSON
+        </button>
+      </div>
+      <p className="hint" style={{ marginTop: 6 }}>エリア（多角形）</p>
+      <div className="row wrap">
+        <button onClick={async () => guard(await exportAreasGeoJson(), "エリアGeoJSON")} disabled={areas.length === 0}>
+          Areas GeoJSON
+        </button>
+      </div>
+      <p className="hint">CSV=作業CRSメートル座標 / GeoJSON=WGS84(lng,lat)（作業CRS座標もプロパティに併記）。</p>
     </section>
   );
 }

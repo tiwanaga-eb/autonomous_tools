@@ -1,5 +1,6 @@
 // 排土（パイル）配置パネル。エリア内に円錐パイル（体積/高さ＋安息角）を均等配置する。
 import { api } from "@/api/client";
+import { exportPilesCsv, exportPilesGeoJson } from "@/exporters";
 import { useStore } from "@/store/useStore";
 import { runBusy } from "@/ui/busy";
 import { NumberField } from "@/ui/NumberField";
@@ -165,6 +166,20 @@ export function PilePanel() {
           {busy ? "計算中…" : "配置を計算"}
         </button>
         <button onClick={() => setPlan(null)} disabled={!plan}>クリア</button>
+        <button
+          onClick={() => setStatus(exportPilesCsv() ? "排土CSVを保存しました" : "先に配置を計算してください", "info")}
+          disabled={!plan}
+          title="各パイルの座標（作業CRS[m]）と寸法をCSVで保存"
+        >
+          CSV
+        </button>
+        <button
+          onClick={async () => setStatus((await exportPilesGeoJson()) ? "排土GeoJSONを保存しました" : "先に配置を計算してください", "info")}
+          disabled={!plan}
+          title="各パイルをWGS84のPointで保存（寸法・作業CRS座標・計画メタ付き）"
+        >
+          GeoJSON
+        </button>
       </div>
 
       {plan && (

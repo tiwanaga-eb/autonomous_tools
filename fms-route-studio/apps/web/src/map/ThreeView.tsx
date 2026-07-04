@@ -9,6 +9,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { api } from "@/api/client";
 import type { PointCloud } from "@/api/client";
 import { dispatch } from "@/commandBus";
+import { downloadDataUrl, timestampName } from "@/exporters";
 import { pickLayer } from "@/layerSelect";
 import { useStore } from "@/store/useStore";
 import type { XY } from "@/types/api";
@@ -539,6 +540,19 @@ export function ThreeView() {
     rebuildEdit();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activePolygon, mode, areas, waypoints]);
+
+  // スクリーンキャプチャ: 直前に明示レンダリングしてから toDataURL（preserveDrawingBuffer 不要）
+  useEffect(() => {
+    const onCapture = () => {
+      const s = st.current;
+      if (!s) return;
+      s.renderer.render(s.scene, s.camera);
+      downloadDataUrl(timestampName("3d", "png"), s.renderer.domElement.toDataURL("image/png"));
+      useStore.getState().setStatus("3Dビューをキャプチャしました（PNG保存）", "success");
+    };
+    window.addEventListener("frs:capture", onCapture);
+    return () => window.removeEventListener("frs:capture", onCapture);
+  }, []);
 
   // 鉛直強調は group.scale.y で反映（頂点再構築なし）
   useEffect(() => { applyVExag(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [vExag]);
