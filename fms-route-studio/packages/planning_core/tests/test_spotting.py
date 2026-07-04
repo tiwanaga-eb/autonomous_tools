@@ -237,7 +237,9 @@ def test_spotting_method_selection():
     rs = plan_spotting(S, T, rho=5.0, max_switchbacks=1, method="reeds_shepp")
     dub = plan_spotting(S, T, rho=5.0, max_switchbacks=1, method="dubins")
     assert auto.feasible and rs.feasible and dub.feasible
-    assert rs.n_switchbacks == 1  # RS は曲がりながらの後進で切り返す
+    # RS は曲がりながらの後進で切り返す。据え切り回避（既定 deny）が両端直線化できる
+    # 2カスプ RS 変種を選ぶことがあるため 1〜2 を許容。
+    assert rs.n_switchbacks in (1, 2)
     # hybrid はマップ無しでは生成不可（明示状態）。
     hyb = plan_spotting(S, T, rho=5.0, max_switchbacks=1, method="hybrid_astar")
     assert hyb.status == "NO_HYBRID_MAP" and not hyb.feasible
@@ -349,7 +351,10 @@ def test_spotting_cusp_yaw_continuous_with_smoothing():
         for c in cusps:
             a, b = pts[c - 1]["heading_deg"], pts[c]["heading_deg"]
             jump = abs((b - a + 180) % 360 - 180)
-            assert jump < 1.0, f"cusp idx={c} でヨー角が {jump:.1f}deg 飛んでいる"
+            # 直線マージンが入った cusp は連続（<1°）。狭所でマージン0の cusp は円弧接合の
+            # 離散接線差（~κ·step ≈ 2〜4°、停止点なので無害）が残るため 5° まで許容。
+            # 平滑化がマージンを曲げる回帰（~19°ジャンプ）はこの閾値でも検出できる。
+            assert jump < 5.0, f"cusp idx={c} でヨー角が {jump:.1f}deg 飛んでいる"
 
 
 def _endpoint_curvature(res):
@@ -423,3 +428,41 @@ def test_spotting_narrow_corridor_multipoint_turn():
     assert res.footprint_inside is True
     assert res.n_switchbacks >= 2  # 狭所は多点ターン（複数切り返し）で解く
     assert res.approach_error_m < 0.5
+
+
+def test_spotting_stationary_deny_differs_and_has_no_loops():
+    """据え切り 禁止/許可 で経路が変わる回帰（ユーザー報告「どちらでも同じパス」対応）。
+
+    横向きターゲット＝端点で円弧が要る配置。禁止では両端に直線リードが入り、
+    リード区間の方位ドリフトは ≤2°。旧実装の後付けスプライスはρループを作り
+    経路長が ~4.7倍に膨れていた → 1.6倍以内であることも検証。
+    """
+    from planning_core.vehicle.profiles import load_builtin
+
+    veh = load_builtin("HM400")
+    start, target = (0.0, 0.0, 0.0), (25.0, 12.0, math.radians(90))
+    allow = plan_spotting(start, target, rho=veh.min_turning_radius, max_switchbacks=1,
+                          vehicle=veh, allow_stationary_steer=True)
+    deny = plan_spotting(start, target, rho=veh.min_turning_radius, max_switchbacks=1,
+                         vehicle=veh, allow_stationary_steer=False)
+    assert allow.feasible and deny.feasible
+    assert deny.allow_stationary is False and allow.allow_stationary is True
+    assert deny.endpoint_margin_start_m > 0 and deny.endpoint_margin_goal_m > 0
+    assert deny.length_total < allow.length_total * 1.6  # ρループの大回りを作らない
+
+    # リード区間（端点直線）内は方位一定 = 停止中の据え切り不要
+    pts = deny.points
+    s = [p["s"] for p in pts]
+
+    def max_drift(idxs, lead):
+        h0 = pts[idxs[0]]["heading_deg"]
+        base = s[idxs[0]]
+        mx = 0.0
+        for i in idxs:
+            if abs(s[i] - base) > lead - 0.2:
+                break
+            mx = max(mx, abs((pts[i]["heading_deg"] - h0 + 180) % 360 - 180))
+        return mx
+
+    assert max_drift(range(len(pts)), deny.endpoint_margin_start_m) <= 2.0
+    assert max_drift(range(len(pts) - 1, -1, -1), deny.endpoint_margin_goal_m) <= 2.0

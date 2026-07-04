@@ -138,10 +138,13 @@ export function SpottingPanel() {
       });
       setSpotResult(res);
       const m = res.metrics;
-      // 据え切り診断: 端点に直線が入ったか（=据え切り回避できたか）を可視化
+      // 据え切り診断: 端点に直線が入ったか（=据え切り回避できたか）を可視化。
+      // 狭所で直線化できなかった端は ⚠ で明示（設定が無視されたのではなく幾何的に不可）。
+      const l0 = res.endpoint_margin_start_m ?? 0;
+      const lN = res.endpoint_margin_goal_m ?? 0;
       const ss = res.allow_stationary
         ? "据え切り許可"
-        : `据え切り回避(端点直線 ${res.endpoint_margin_start_m ?? 0}/${res.endpoint_margin_goal_m ?? 0}m)`;
+        : `据え切り回避(端点直線 開始${l0 > 0 ? `${l0}m` : "⚠不可"} / 到着${lN > 0 ? `${lN}m` : "⚠不可"})`;
       setStatus(
         res.feasible
           ? `寄り付き: ${m.length_total_m}m / ${m.time_total_s}s / 切返${m.n_switchbacks}回 / 誤差${m.approach_error_m}m ・ ${ss}`

@@ -160,7 +160,8 @@ def _apply_cusp_margins(segments, margin: float, step: float, fp_ok=None):
     return segs
 
 
-def _stage_segments(start, S, Syaw, target, rho, step, margin, fp_ok=None):
+def _stage_segments(start, S, Syaw, target, rho, step, margin, fp_ok=None,
+                    start_lead: float = 0.0, goal_lead: float = 0.0):
     """前進(start→S)＋後進(S→target) を、**切り返し点 S に直線マージン**を挟んで構成する。
 
     切り返し点では実車はステアリングを 0°(直進)にしてから前後を反転する必要がある。Dubins の
@@ -169,22 +170,47 @@ def _stage_segments(start, S, Syaw, target, rho, step, margin, fp_ok=None):
     （ステア0°）になり追従できる。返値 [(fwd_pts,"F"),(rev_pts,"R")] or None。
 
     fp_ok を与えると、手前マージン区間(S_pre→S)がエリアをはみ出さない範囲までマージンを短縮する。
+
+    start_lead / goal_lead > 0（据え切り禁止）: **端点直線を生成時から織り込む**。
+    出発は start から start_lead 直進した姿勢を Dubins の始点に、到着は target の手前
+    goal_lead（車体方位の +方向。後進ドックでは通過順に target'→target）を終点にする。
+    後付けのスプライス（Dubins 再接続）より確実で、狭所でも端点が曲がった候補が選ばれない。
     """
+    sx0, sy0, syaw0 = float(start[0]), float(start[1]), float(start[2])
+    tx0, ty0, tyaw0 = float(target[0]), float(target[1]), float(target[2])
+    pre: list = []
+    start_eff = (sx0, sy0, syaw0)
+    if start_lead > 0:
+        s1 = (sx0 + start_lead * math.cos(syaw0), sy0 + start_lead * math.sin(syaw0))
+        pre = _straight_pts((sx0, sy0), s1, step)      # start→(直進)→start'
+        start_eff = (s1[0], s1[1], syaw0)
+    post: list = []
+    target_eff = (tx0, ty0, tyaw0)
+    if goal_lead > 0:
+        t1 = (tx0 + goal_lead * math.cos(tyaw0), ty0 + goal_lead * math.sin(tyaw0))
+        post = _straight_pts(t1, (tx0, ty0), step)     # target'→(直線後進)→target
+        target_eff = (t1[0], t1[1], tyaw0)
+
     c, s = math.cos(Syaw), math.sin(Syaw)
     # 手前マージン区間 S_pre→S（前進ヘッディング=Syaw）がエリア内に収まるよう margin を適応短縮。
     if margin > 0:
         margin = _adapt_margin(-1.0, S, c, s, "F", margin, step, fp_ok)
     if margin <= 1e-9:  # マージン無し（狭所で挿入余地なし or 指定0）: S へ直接接続
-        f = sample_dubins(start, (S[0], S[1], Syaw), rho, step)
-        r = reverse_dubins((S[0], S[1], Syaw), target, rho, step)
-        return None if (f is None or r is None) else [(f, "F"), (r, "R")]
+        f = sample_dubins(start_eff, (S[0], S[1], Syaw), rho, step)
+        r = reverse_dubins((S[0], S[1], Syaw), target_eff, rho, step)
+        if f is None or r is None:
+            return None
+        return [(pre + list(f)[1:] if pre else list(f), "F"),
+                (list(r) + post[1:] if post else list(r), "R")]
     S_pre = (S[0] - margin * c, S[1] - margin * s)  # S の手前（進入方位の逆へ margin）
-    f_dub = sample_dubins(start, (S_pre[0], S_pre[1], Syaw), rho, step)
-    r_dub = reverse_dubins((S_pre[0], S_pre[1], Syaw), target, rho, step)
+    f_dub = sample_dubins(start_eff, (S_pre[0], S_pre[1], Syaw), rho, step)
+    r_dub = reverse_dubins((S_pre[0], S_pre[1], Syaw), target_eff, rho, step)
     if f_dub is None or r_dub is None:
         return None
-    fwd = list(f_dub) + _straight_pts(S_pre, S, step)[1:]          # …→S_pre→(直線)→S
-    rev = _straight_pts(S, S_pre, step) + list(r_dub)[1:]          # S→(直線後進)→S_pre→…→target
+    fwd = (pre + list(f_dub)[1:] if pre else list(f_dub)) + _straight_pts(S_pre, S, step)[1:]  # …→S_pre→(直線)→S
+    rev = _straight_pts(S, S_pre, step) + list(r_dub)[1:]          # S→(直線後進)→S_pre→…→target'
+    if post:
+        rev = rev + post[1:]                                        # →(直線後進)→target
     return [(fwd, "F"), (rev, "R")]
 
 
@@ -205,31 +231,94 @@ def _insert_endpoint_margin(pts, gear, fixed_pose, e, rho, step, fp_ok, *, at_st
     yaw = float(fixed_pose[2])
     seglen = np.hypot(*np.diff(work, axis=0).T)
     s = np.concatenate([[0.0], np.cumsum(seglen)])
-    # 区間長に収まるよう直線長を短縮（短い後進差し込みでも端点を直線化＝据え切り回避）。
-    e = min(e, 0.45 * float(s[-1]))
-    if e < 0.8:
-        return pts, 0.0                                # 区間が極端に短く直線化の意味がない
-    iQ = max(2, min(len(work) - 2, int(np.searchsorted(s, e))))
+    total = float(s[-1])
     hd = _headings(work, g)
-    Q = work[iQ]
-    hQ = float(hd[iQ])
+
     travel = 1.0 if g == "F" else -1.0
     c, sn = math.cos(yaw), math.sin(yaw)
     p0 = (float(work[0, 0]), float(work[0, 1]))
-    core = (p0[0] + travel * e * c, p0[1] + travel * e * sn)
-    straight = _straight_pts(p0, core, step)           # 固定端→core の直線（ここで端点曲率0）
-    recon = (sample_dubins((core[0], core[1], yaw), (Q[0], Q[1], hQ), rho, step) if g == "F"
-             else reverse_dubins((core[0], core[1], yaw), (Q[0], Q[1], hQ), rho, step))
-    if recon is None or len(recon) < 2:
-        return pts, 0.0
-    new = np.asarray([list(p) for p in straight] + [list(p) for p in recon[1:]]
-                     + [list(x) for x in work[iQ + 1:]], float)
-    if fp_ok is not None:
-        hh = _headings(new, g)
-        for i in range(len(new)):
-            if not fp_ok(float(new[i, 0]), float(new[i, 1]), float(hh[i])):
-                return pts, 0.0                        # エリア逸脱 → 挿入断念（据え切りは残るが安全）
-    return (new[::-1].copy() if rev else new), e
+
+    # 既に端点が直線（生成時にリードを織り込んだ候補など）なら挿入不要。**幾何判定**:
+    # 固定姿勢の方位射線からの横偏差 ≤5cm ＋ 射線方向に単調前進、が続く長さを直線 run とする
+    # （方位差だけの判定は緩いカーブ κ~0.06 でも数点は通ってしまい、誤って「直線」扱いになる）。
+    dxs = work[:, 0] - p0[0]
+    dys = work[:, 1] - p0[1]
+    t_along = travel * (dxs * c + dys * sn)
+    d_perp = np.abs(-sn * dxs + c * dys)
+    run = 0.0
+    for i in range(1, len(work)):
+        if d_perp[i] > 0.05 or t_along[i] < t_along[i - 1] - 1e-6:
+            break
+        run = float(t_along[i])
+    if run >= min(e, 0.45 * total) - 1e-6 and run >= 0.8:
+        return pts, float(min(run, e))
+
+    def _try(ee: float, sQ: float):
+        """直線 ee ＋ 弧長 sQ の点への Dubins 再接続を試す。不成立/ループ/エリア逸脱は None。
+
+        sQ >= total は「セグメント終端（cusp/他端の固定姿勢）へ接続」＝セグメント全体を
+        引き直す最終手段（短いセグメントでは途中の Q が取れないため）。終端姿勢は厳密保持。
+        """
+        if sQ >= total - max(step, 0.5):
+            iQ = len(work) - 1
+        else:
+            iQ = max(2, min(len(work) - 2, int(np.searchsorted(s, sQ))))
+        Q = work[iQ]
+        hQ = float(hd[iQ])
+        core = (p0[0] + travel * ee * c, p0[1] + travel * ee * sn)
+        straight = _straight_pts(p0, core, step)       # 固定端→core の直線（ここで端点曲率0）
+        recon = (sample_dubins((core[0], core[1], yaw), (Q[0], Q[1], hQ), rho, step) if g == "F"
+                 else reverse_dubins((core[0], core[1], yaw), (Q[0], Q[1], hQ), rho, step))
+        if recon is None or len(recon) < 2:
+            return None
+        # ループ抑制: 再接続長が直線距離＋1周弱(1.2πρ)を超える構成（ρループの大回り）は不採用。
+        rec = np.asarray(recon, float)[:, :2]
+        rl = float(np.sum(np.hypot(*np.diff(rec, axis=0).T)))
+        if rl > math.hypot(Q[0] - core[0], Q[1] - core[1]) + 1.2 * math.pi * rho:
+            return None
+        new = np.asarray([list(p) for p in straight] + [list(p) for p in recon[1:]]
+                         + [list(x) for x in work[iQ + 1:]], float)
+        if fp_ok is not None:
+            hh = _headings(new, g)
+            for i in range(len(new)):
+                if not fp_ok(float(new[i, 0]), float(new[i, 1]), float(hh[i])):
+                    return None                        # エリア逸脱 → この構成は不採用
+        return new
+
+    # 反対端の直線リード（挿入済み/生成時織り込み）を測る。再接続の置換はそこを侵食しない。
+    far = 0.0
+    hN = float(hd[-1])
+    for i in range(len(work) - 2, -1, -1):
+        if abs((float(hd[i]) - hN + math.pi) % (2.0 * math.pi) - math.pi) > math.radians(2.0):
+            break
+        far = total - float(s[i])
+    smax = total - (far if far >= 0.8 else 0.0) - 0.5
+
+    # マージン長 ee（狭所では短縮）× 再接続点 sQ のラダー。近すぎる Q（core の旋回円内）は
+    # Dubins が必然的にρループ（大回り）するため _try のループガードが弾く。円外に出る最初の
+    # 経路点（ユークリッド判定）も候補に加える。セグメント全置換（sQ=total）は**反対端に保護
+    # すべきリードが無いときだけ**許可（旧実装はこれで反対端の直線を消していた）。
+    for fe in (1.0, 0.66, 0.4):
+        ee = min(e * fe, 0.45 * total)
+        if ee < 0.8:
+            continue                                   # 区間が極端に短く直線化の意味がない
+        core = (p0[0] + travel * ee * c, p0[1] + travel * ee * sn)
+        d2core = np.hypot(work[:, 0] - core[0], work[:, 1] - core[1])
+        sqs = [ee + 0.8 * rho, ee + 1.6 * rho, ee + 2.5 * rho, ee + 3.5 * rho]
+        first_outside = next((float(s[i]) for i in range(2, len(work) - 1)
+                              if s[i] > ee + 0.5 and d2core[i] >= 2.05 * rho), None)
+        if first_outside is not None:
+            sqs.append(first_outside)
+        sqs = [q for q in sqs if q <= smax]
+        if far < 0.8:
+            sqs.append(total)                          # 全置換（反対端のリードを消さない場合のみ）
+        for sQ in sqs:
+            new = _try(ee, sQ)
+            if new is not None:
+                return (new[::-1].copy() if rev else new), ee
+    if run >= 0.8:
+        return pts, float(run)                         # 挿入は不可だが端点は部分的に直線（その長さを報告）
+    return pts, 0.0                                    # 挿入不可（据え切りは残るが安全側）
 
 
 def _allow_stationary_default(vehicle) -> bool:
@@ -571,7 +660,7 @@ def _smooth_segment(pts, accept, r_min, step, *, lock_start_m: float = 0.0, lock
 
 
 def _hybrid_candidate(start, target, rho, cost, mask, transform, obstacle_value, allow_reverse, ev,
-                      margin=0.0, step=0.3, fp_ok=None, footprint=None):
+                      margin=0.0, step=0.3, fp_ok=None, footprint=None, wrap=None):
     """コストに沿って滑らかに曲がる cost-aware 候補（hybrid A*, 後進可）。失敗時 None。
     内部 cusp にも直線マージンを挿入して追従可能にする。
 
@@ -609,6 +698,22 @@ def _hybrid_candidate(start, target, rho, cost, mask, transform, obstacle_value,
         segs = _segments_from_hybrid(res["points"])
         if not segs:
             continue
+        if wrap is not None:
+            # 据え切り禁止: start′/goal′ で計画した経路に、元の固定姿勢までの直線リードを接合する。
+            # 直線の走行ギアは隣接セグメントと一致が条件（不一致=この変種は成立しない）。
+            (p_start, s_gear, s_lead), (p_goal, t_gear, t_lead) = wrap
+            if s_lead > 0:
+                if segs[0][1] != s_gear:
+                    continue
+                pre = _straight_pts((p_start[0], p_start[1]),
+                                    (float(segs[0][0][0][0]), float(segs[0][0][0][1])), step)
+                segs[0] = (pre + [tuple(map(float, q)) for q in np.asarray(segs[0][0], float)[1:]], segs[0][1])
+            if t_lead > 0:
+                if segs[-1][1] != t_gear:
+                    continue
+                post = _straight_pts((float(segs[-1][0][-1][0]), float(segs[-1][0][-1][1])),
+                                     (p_goal[0], p_goal[1]), step)
+                segs[-1] = ([tuple(map(float, q)) for q in np.asarray(segs[-1][0], float)[:-1]] + post, segs[-1][1])
         c = ev(_apply_cusp_margins(segs, margin, step, fp_ok))
         if best is None or (c.feasible and not best.feasible) or \
            (c.feasible == best.feasible and c.fp_max_frac < best.fp_max_frac):
@@ -697,6 +802,8 @@ def plan_spotting(
     margin = float(cusp_margin_m) if (cusp_margin_m and cusp_margin_m > 0) else max(0.4 * rho, 3.0)
     # 据え切り（出発/到着の端点で停止中に操舵）の可否。None は車種既定（履帯=可, ホイール=不可）。
     allow_stationary = allow_stationary_steer if allow_stationary_steer is not None else _allow_stationary_default(vehicle)
+    # 据え切り禁止時は端点直線リードを**候補の生成時から**織り込む（後付けスプライスより確実）。
+    end_lead = 0.0 if allow_stationary else margin
     cmax = float(cost[cost < obstacle_value].max()) if (cost is not None and np.any(cost < obstacle_value)) else 1.0
     cmax = cmax if cmax > 1e-9 else 1.0
 
@@ -741,7 +848,8 @@ def plan_spotting(
     # --- 手動切り返し点モード: 指定姿勢 S を固定し、前進(start→S)＋後進(S→target) のみ生成 ---
     if manual_switch_pose is not None:
         Sx, Sy, Syaw = float(manual_switch_pose[0]), float(manual_switch_pose[1]), float(manual_switch_pose[2])
-        segs = _stage_segments(start, (Sx, Sy), Syaw, target, rho, step, margin, fp_ok)  # 切り返し点に直線マージン
+        segs = _stage_segments(start, (Sx, Sy), Syaw, target, rho, step, margin, fp_ok,
+                               start_lead=end_lead, goal_lead=end_lead)  # 切り返し点に直線マージン
         if segs is None:
             return SpottingResult(status="NO_PATH")
         res = ev(segs)
@@ -803,7 +911,8 @@ def plan_spotting(
                     _add_pose(tx + d * math.cos(bdir), ty + d * math.sin(bdir), tyaw + hfac * bearing)
 
         def _eval_stage(p):
-            segs = _stage_segments(start, (p[0], p[1]), p[2], target, rho, step, margin, fp_ok)
+            segs = _stage_segments(start, (p[0], p[1]), p[2], target, rho, step, margin, fp_ok,
+                                   start_lead=end_lead, goal_lead=end_lead)
             return ev(segs) if segs is not None else None
 
         # 切り返し点 S に直線マージンを入れて追従可能に（S 前後でステア0°）。**並列評価**。
@@ -837,6 +946,23 @@ def plan_spotting(
                                margin=margin, step=step, fp_ok=fp_ok, footprint=fp_search)
         if hc is not None and _keep(hc):
             cands.append(hc)
+        if end_lead > 0:
+            # 据え切り禁止: 端点直線リードを織り込んだ hybrid 変種（start′/goal′ から計画し、
+            # 固定姿勢までの直線を接合）。狭所の K ターンはスプライス後付けでは端点を直線化
+            # できないため、探索自体をリード込みで行う。ギア組合せ4変種を試す。
+            sdx, sdy = math.cos(syaw), math.sin(syaw)
+            tdx, tdy = math.cos(tyaw), math.sin(tyaw)
+            for s_sign, s_gear in ((1.0, "F"), (-1.0, "R")):
+                st2 = (sx + s_sign * end_lead * sdx, sy + s_sign * end_lead * sdy, syaw)
+                for t_sign, t_gear in ((1.0, "R"), (-1.0, "F")):
+                    tg2 = (tx + t_sign * end_lead * tdx, ty + t_sign * end_lead * tdy, tyaw)
+                    hv = _hybrid_candidate(
+                        st2, tg2, rho, cost, drivable_mask, transform, obstacle_value, allow_switch, ev,
+                        margin=margin, step=step, fp_ok=fp_ok, footprint=fp_search,
+                        wrap=((start, s_gear, end_lead), (target, t_gear, end_lead)),
+                    )
+                    if hv is not None and _keep(hv):
+                        cands.append(hv)
 
     # 候補が1つも生成できなかった（例: method="hybrid_astar" なのに drivable/cost が無い、
     # 選択手法が指定姿勢に解を持たない等）。zone 制約由来ではないので NO_PATH を返す。
@@ -885,23 +1011,80 @@ def plan_spotting(
 
     # --- 据え切り禁止: 始端(start)・終端(goal)に直線マージンを挿入し端点曲率を0にする。
     #     停止点でステア0°→漸増/漸減。**平滑化の有無に依らず**適用（据え切り回避は要件）。
+    #     ステージ候補は生成時からリード織り込み済み（既直線として検出）。RS/hybrid 等は後付け挿入。
+    #     選ばれた best が直線化できない場合は、**直線化できる次善候補へフォールバック**する
+    #     （旧: best のみ試し、失敗すると許可時と同一の経路が黙って返っていた）。
     #     挿入できた端はその長さ lead を記録し、後段の平滑化でロックして直線を保つ。---
     lead0 = leadN = 0.0
     if not allow_stationary and best.points:
-        segs0 = _segments_from_hybrid(_states_to_tuples(best.points))
-        if segs0:
-            np0, lead0 = _insert_endpoint_margin(segs0[0][0], segs0[0][1], start, margin, rho, step, _accept, at_start=True)
-            if lead0 > 0:
-                segs0[0] = (np0, segs0[0][1])
-            npN, leadN = _insert_endpoint_margin(segs0[-1][0], segs0[-1][1], target, margin, rho, step, _accept, at_start=False)
-            if leadN > 0:
-                segs0[-1] = (npN, segs0[-1][1])
-            if lead0 > 0 or leadN > 0:
+        def _straighten(c: SpottingResult):
+            """候補 c の両端に直線リードを付与。返値 (segs or None, lead0, leadN, 幾何変更あり)。"""
+            segs0 = _segments_from_hybrid(_states_to_tuples(c.points))
+            if not segs0:
+                return None, 0.0, 0.0, False
+            p0n, l0 = _insert_endpoint_margin(segs0[0][0], segs0[0][1], start, margin, rho, step, _accept, at_start=True)
+            ch0 = p0n is not segs0[0][0]
+            if l0 > 0:
+                segs0[0] = (p0n, segs0[0][1])
+            pNn, lN = _insert_endpoint_margin(segs0[-1][0], segs0[-1][1], target, margin, rho, step, _accept, at_start=False)
+            chN = pNn is not segs0[-1][0]
+            if lN > 0:
+                segs0[-1] = (pNn, segs0[-1][1])
+            return segs0, l0, lN, (ch0 or chN)
+
+        def _straight_run(c: SpottingResult, from_end: bool) -> float:
+            """端点からの直線長[m]（方位ドリフト2°以内）。挿入せず既存点列だけで測る（安価）。"""
+            p = c.points
+            if len(p) < 3:
+                return 0.0
+            idxs = range(len(p) - 1, -1, -1) if from_end else range(len(p))
+            it = iter(idxs)
+            i0 = next(it)
+            h0 = p[i0]["heading_deg"]
+            base = p[i0]["s"]
+            run = 0.0
+            for i in it:
+                if abs((p[i]["heading_deg"] - h0 + 180.0) % 360.0 - 180.0) > 2.0:
+                    break
+                run = abs(p[i]["s"] - base)
+            return run
+
+        def _ends_of(c: SpottingResult) -> int:
+            return int(_straight_run(c, False) >= 0.8) + int(_straight_run(c, True) >= 0.8)
+
+        others = [c for c in cands if c.points and c is not best]
+        # スコア上位に加え、「既に端点が直線」な候補（生成時リード織り込みのステージ候補等）も
+        # 必ず土俵に乗せる（スコアだけだと僅かに長い born-straight 候補が上位に入らない）。
+        # 不成立側の順序は best-effort と同じ「はみ出し率最小を最優先」を保つ。
+        by_score = sorted(others, key=lambda c: (not c.feasible, round(c.fp_max_frac, 4), c.score))[:8]
+        by_ends = sorted(others, key=lambda c: (not c.feasible, -_ends_of(c), round(c.fp_max_frac, 4), c.score))[:6]
+        seen: set = {id(best)}
+        ranked = [best]
+        for c in by_score + by_ends:
+            if id(c) not in seen:
+                seen.add(id(c))
+                ranked.append(c)
+        pick = None  # (key, cand, l0, lN)
+        for c in ranked:
+            segs0, l0, lN, changed = _straighten(c)
+            if segs0 is None:
+                continue
+            if changed:
                 cand = ev(segs0)
-                if cand.points:
-                    cand.score = _score(cand, w)
-                    cand.status = best.status if not cand.feasible else "OK"
-                    best = cand  # 据え切り回避は要件なのでスコア比較せず採用
+                if not cand.points:
+                    continue
+                cand.score = _score(cand, w)
+            else:
+                cand = c
+            # 成立性（エリア包含=安全ゲート）＞ 据え切り回避（直線化できた端数）＞
+            # はみ出し率（best-effort の既存規約）＞ コスト。
+            key = (not cand.feasible, -(int(l0 > 0) + int(lN > 0)), round(cand.fp_max_frac, 4), cand.score)
+            if pick is None or key < pick[0]:
+                pick = (key, cand, l0, lN)
+            if l0 > 0 and lN > 0 and cand.feasible:
+                break  # 両端直線化＋成立 → これ以上は探さない
+        if pick is not None:
+            best, lead0, leadN = pick[1], pick[2], pick[3]
 
     # --- 平滑化ポストプロセス: 選択経路の曲率不連続(dκ/ds スパイク=速度低下)と蛇行を抑える。
     #     gear区間ごとに端点固定で平滑化。エリア外へ出る移動は拒否。悪化したら採用しない＝安全側。---
