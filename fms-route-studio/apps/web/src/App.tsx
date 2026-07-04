@@ -12,6 +12,7 @@ import { DrivableAreaPanel } from "@/panels/DrivableAreaPanel";
 import { FleetPanel } from "@/panels/FleetPanel";
 import { IOPanel } from "@/panels/IOPanel";
 import { LayerPanel } from "@/panels/LayerPanel";
+import { PilePanel } from "@/panels/PilePanel";
 import { ProjectPanel } from "@/panels/ProjectPanel";
 import { RoutePanel } from "@/panels/RoutePanel";
 import { SpottingPanel } from "@/panels/SpottingPanel";
@@ -38,6 +39,7 @@ const FEATURES: Record<FeatureId, { title: string; render: () => JSX.Element }> 
   vehicle: { title: "車両パラメータ", render: () => <VehiclePanel /> },
   spotting: { title: "寄り付きシミュレータ", render: () => <SpottingPanel /> },
   areas: { title: "エリア", render: () => <AreaPanel /> },
+  piles: { title: "排土（パイル）配置", render: () => <PilePanel /> },
   fleet: { title: "複数台（経路の競合判定）", render: () => <FleetPanel /> },
   project: {
     title: "プロジェクト / 入出力",

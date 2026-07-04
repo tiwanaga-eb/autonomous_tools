@@ -20,6 +20,7 @@ const ICONS: Record<FeatureId, ReactNode> = {
   vehicle: <I><path d="M3 13h13l3 3v2h-3M3 13V8h10l3 5M3 13v5h2" /><circle cx="7.5" cy="18" r="1.6" /><circle cx="17" cy="18" r="1.6" /></I>,
   spotting: <I><path d="M12 3v6M12 21a7 7 0 1 0-4-12.7" /><path d="M9 6 12 3l3 3" /></I>,
   areas: <I><path d="M5 4h9l5 5v11H5z" /><path d="M9 9h6M9 13h6M9 17h4" /></I>,
+  piles: <I><path d="M3 19h18" /><path d="M5 19l4-8 3 4 3-6 4 10" /></I>,
   fleet: <I><circle cx="6" cy="7" r="2" /><circle cx="18" cy="7" r="2" /><path d="M6 9v4l6 4 6-4V9" /><path d="M12 21v-4" /></I>,
   project: <I><path d="M4 5a2 2 0 0 1 2-2h8l6 6v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z" /><path d="M14 3v6h6" /></I>,
 };
@@ -32,6 +33,7 @@ const NAV: { id: FeatureId; label: string }[] = [
   { id: "vehicle", label: "車両" },
   { id: "spotting", label: "寄り付き" },
   { id: "areas", label: "エリア" },
+  { id: "piles", label: "排土" },
   { id: "fleet", label: "複数台" },
   { id: "project", label: "保存" },
 ];

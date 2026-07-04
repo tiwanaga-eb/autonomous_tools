@@ -11,7 +11,7 @@ import MousePosition from "ol/control/MousePosition";
 import ScaleLine from "ol/control/ScaleLine";
 import { defaults as defaultControls } from "ol/control/defaults";
 import type { Extent } from "ol/extent";
-import { LineString, Point, Polygon } from "ol/geom";
+import { Circle as CircleGeom, LineString, Point, Polygon } from "ol/geom";
 import DragPan from "ol/interaction/DragPan";
 import Modify from "ol/interaction/Modify";
 import WebGLTileLayer from "ol/layer/WebGLTile";
@@ -96,6 +96,7 @@ export function MapView() {
   const fleetSim = useStore((s) => s.fleetSim);
   const fleetSimT = useStore((s) => s.fleetSimT);
   const fleetBays = useStore((s) => s.fleetBays);
+  const pilePlan = useStore((s) => s.pilePlan);
 
   // 選択車両の寸法＋運動学（ホバー点の車両形状描画用: アーティキュレート2矩形 / アッカーマン操舵輪）。
   const [vehDims, setVehDims] = useState<VehShape | null>(null);
@@ -562,6 +563,21 @@ export function MapView() {
       });
     }
 
+    // 排土（パイル）配置: 基部円（実寸）＋中心点
+    if (pilePlan && pilePlan.centers.length) {
+      const r = pilePlan.pile.radius_m;
+      pilePlan.centers.forEach(([px, py]) => {
+        if (r > 0) {
+          const base = new Feature(new CircleGeom([px, py], r));
+          base.set("kind", "pilebase");
+          src.addFeature(base);
+        }
+        const dot = new Feature(new Point([px, py]));
+        dot.set("kind", "pilecenter");
+        src.addFeature(dot);
+      });
+    }
+
     // 切り返し可能エリア（選択中の area を強調）
     if (spotSwitchZoneId) {
       const z = areas.find((a) => a.id === spotSwitchZoneId);
@@ -624,7 +640,7 @@ export function MapView() {
         src.addFeature(f);
       }
     }
-  }, [waypoints, route, areas, activePolygon, importedRoutes, roadWidthM, vehDims, showWaypoints, spotStart, spotTarget, spotSwitchPose, spotSwitchZoneId, spotContainAreaId, spotExitGoal, spotRoadWidthM, spotResult, layers, drivableLayerId, savedRoutes, showSavedRoutes, fleetConflicts, activeFeature, fleetBays]);
+  }, [waypoints, route, areas, activePolygon, importedRoutes, roadWidthM, vehDims, showWaypoints, spotStart, spotTarget, spotSwitchPose, spotSwitchZoneId, spotContainAreaId, spotExitGoal, spotRoadWidthM, spotResult, layers, drivableLayerId, savedRoutes, showSavedRoutes, fleetConflicts, activeFeature, fleetBays, pilePlan]);
 
   // ---- Fleet 再生（現在時刻 fleetSimT の各車位置）: 毎フレーム変わるため専用ソースだけを更新 ----
   useEffect(() => {

@@ -204,6 +204,20 @@ export interface SpotResult {
   safety?: SafetyReport;
 }
 
+// 排土（パイル）配置計画（/api/earthworks/piles）
+export interface PilePlanResult {
+  pile: { height_m: number; radius_m: number; volume_m3: number; repose_deg: number };
+  centers: [number, number][];
+  count: number;
+  spacing: { dx_m: number; dy_m: number; stagger: boolean };
+  grid_angle_deg: number;
+  edge_margin_m: number;
+  area_m2: number;
+  total_volume_m3: number;
+  n_theory: number | null;           // 撒き出しモード時の理論数 ⌊A·t/V⌋
+  suggested_spacing_m: number | null; // 撒き出しモード時の推奨間隔 √(V/t)
+}
+
 export interface SafetyCheck {
   name: string;
   label: string;

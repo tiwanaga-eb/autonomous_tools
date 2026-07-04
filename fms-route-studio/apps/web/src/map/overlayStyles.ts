@@ -112,6 +112,14 @@ export const CONTAINZONE_STYLE = new Style({
   stroke: new Stroke({ color: "#2563eb", width: 2.5, lineDash: [10, 5] }),
   fill: new Fill({ color: "#2563eb18" }),
 });
+// 排土（パイル）: 基部円（実寸・安息角の円錐の裾）＋中心点。土砂色で区別。
+export const PILE_BASE_STYLE = new Style({
+  fill: new Fill({ color: "#b4530926" }),
+  stroke: new Stroke({ color: "#92400e", width: 1.5 }),
+});
+export const PILE_CENTER_STYLE = new Style({
+  image: new CircleStyle({ radius: 3, fill: new Fill({ color: "#92400e" }), stroke: new Stroke({ color: "#ffffff", width: 1 }) }),
+});
 // 確定済み Drivable 編集のアウトライン（include=緑 / exclude=赤）。どこを手修正したか可視化。
 export const EDIT_INCLUDE_STYLE = new Style({
   stroke: new Stroke({ color: "#22c55e", width: 2, lineDash: [4, 3] }),
@@ -193,6 +201,8 @@ export function overlayStyleFor(feature: FeatureLike): Style | undefined {
   if (kind === "fleetbaylink") return FLEET_BAY_LINK_STYLE;
   if (kind === "fleetautobay") return FLEET_AUTOBAY_STYLE;
   if (kind === "fleetautobaylink") return FLEET_AUTOBAY_LINK_STYLE;
+  if (kind === "pilebase") return PILE_BASE_STYLE;
+  if (kind === "pilecenter") return PILE_CENTER_STYLE;
   if (kind === "area") return AREA_STYLE;
   if (kind === "activepoly") return ACTIVE_POLY_STYLE;
   if (kind === "polyvertex") return POLY_VERTEX_STYLE;

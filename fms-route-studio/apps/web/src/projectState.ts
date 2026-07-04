@@ -57,6 +57,19 @@ export function serializeProject(): Record<string, unknown> {
     spotWithExit: s.spotWithExit,
     spotExitGoal: s.spotExitGoal,
     spotWeights: s.spotWeights,
+    // 排土（パイル）配置の設定と結果
+    pileAreaId: s.pileAreaId,
+    pileSizeMode: s.pileSizeMode,
+    pileVolumeM3: s.pileVolumeM3,
+    pileHeightM: s.pileHeightM,
+    pileReposeDeg: s.pileReposeDeg,
+    pilePlaceMode: s.pilePlaceMode,
+    pileDx: s.pileDx,
+    pileDy: s.pileDy,
+    pileStagger: s.pileStagger,
+    pileSpreadT: s.pileSpreadT,
+    pileEdgeMarginM: s.pileEdgeMarginM,
+    pilePlan: s.pilePlan,
   };
 }
 
@@ -116,4 +129,17 @@ export function applyProject(state: Record<string, unknown>): void {
   s.setSpotWithExit(g("spotWithExit", false));
   s.setSpotExitGoal(g("spotExitGoal", null));
   s.setSpotWeights(g("spotWeights", DEFAULT_SPOT_WEIGHTS));
+  // 排土（パイル）配置
+  s.setPileAreaId(g("pileAreaId", null));
+  s.setPileSizeMode(g("pileSizeMode", "volume") as "volume" | "height");
+  s.setPileVolumeM3(g("pileVolumeM3", 24));
+  s.setPileHeightM(g("pileHeightM", 1.5));
+  s.setPileReposeDeg(g("pileReposeDeg", 37));
+  s.setPilePlaceMode(g("pilePlaceMode", "spacing") as "spacing" | "spread");
+  s.setPileDx(g("pileDx", 8));
+  s.setPileDy(g("pileDy", 0));
+  s.setPileStagger(g("pileStagger", false));
+  s.setPileSpreadT(g("pileSpreadT", 0.5));
+  s.setPileEdgeMarginM(g("pileEdgeMarginM", -1));
+  s.setPilePlan(g("pilePlan", null));
 }

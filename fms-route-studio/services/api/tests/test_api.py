@@ -779,6 +779,33 @@ def test_plan_rejects_misregistered_layers(tmp_path):
         client.delete(f"/api/layers/{las_id}")
 
 
+def test_earthworks_pile_plan():
+    """パイル配置: 撒き出しモード（V=24m³, t=0.5m, 60×30mエリア）→ 推奨間隔√48m・理論数37。"""
+    r = client.post(
+        "/api/earthworks/piles",
+        json={"polygon": [[0, 0], [60, 0], [60, 30], [0, 30]],
+              "repose_deg": 37.0, "volume_m3": 24.0, "spread_thickness_m": 0.5},
+    )
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["n_theory"] == 37
+    assert 0 < j["count"] <= 37 and len(j["centers"]) == j["count"]
+    assert j["pile"]["height_m"] > 0 and j["pile"]["radius_m"] > 0
+    assert abs(j["suggested_spacing_m"] ** 2 - 48.0) < 0.1
+
+    # 間隔指定モード（高さ指定・千鳥）
+    r2 = client.post(
+        "/api/earthworks/piles",
+        json={"polygon": [[0, 0], [40, 0], [40, 20], [0, 20]],
+              "repose_deg": 35.0, "height_m": 1.5, "dx_m": 6.0, "stagger": True},
+    )
+    assert r2.status_code == 200 and r2.json()["count"] > 0
+
+    # 入力不備（体積も高さも無し）→ 400
+    r3 = client.post("/api/earthworks/piles", json={"polygon": [[0, 0], [10, 0], [10, 10]], "dx_m": 5.0})
+    assert r3.status_code == 400
+
+
 def test_costmap_from_las(tmp_path):
     p = tmp_path / "c.las"
     _make_las(p)

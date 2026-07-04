@@ -265,4 +265,17 @@ export const api = {
   // 分岐起点姿勢（親経路上の点の接線姿勢）
   fleetJunction: (points: [number, number][], s_frac: number) =>
     jpost<{ x: number; y: number; heading_deg: number }>("/api/fleet/junction", { points, s_frac }),
+
+  // 排土（パイル）配置計画: エリア内に円錐パイルを格子配置（間隔指定 or 撒き出し計算）
+  earthworksPiles: (body: {
+    polygon: [number, number][];
+    repose_deg?: number;
+    volume_m3?: number | null;
+    height_m?: number | null;
+    dx_m?: number | null;
+    dy_m?: number | null;
+    spread_thickness_m?: number | null;
+    stagger?: boolean;
+    edge_margin_m?: number | null;
+  }) => jpost<import("@/types/api").PilePlanResult>("/api/earthworks/piles", body),
 };

@@ -64,4 +64,5 @@ export type PlanMode = "auto" | "waypoint_guided";
 export type Algorithm = "spline" | "dubins" | "grid_astar" | "hybrid_astar" | "reeds_shepp" | "rrt_star";
 
 // サイドバーの工程（選択中の機能だけを作業パネルに出す）
-export type FeatureId = "ai" | "data" | "map" | "route" | "vehicle" | "spotting" | "areas" | "fleet" | "project";
+export type FeatureId =
+  | "ai" | "data" | "map" | "route" | "vehicle" | "spotting" | "areas" | "piles" | "fleet" | "project";

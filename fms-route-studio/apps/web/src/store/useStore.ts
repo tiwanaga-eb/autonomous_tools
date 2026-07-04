@@ -7,6 +7,8 @@ import { createEditSlice } from "./editSlice";
 import type { EditSlice } from "./editSlice";
 import { createFleetSlice } from "./fleetSlice";
 import type { FleetSlice } from "./fleetSlice";
+import { createPileSlice } from "./pileSlice";
+import type { PileSlice } from "./pileSlice";
 import { createPlanSlice } from "./planSlice";
 import type { PlanSlice } from "./planSlice";
 import { createSpotSlice } from "./spotSlice";
@@ -28,7 +30,7 @@ export type {
   Waypoint,
 } from "./types";
 
-export type AppState = UiSlice & EditSlice & PlanSlice & SpotSlice & FleetSlice;
+export type AppState = UiSlice & EditSlice & PlanSlice & SpotSlice & FleetSlice & PileSlice;
 
 export const useStore = create<AppState>()((...a) => ({
   ...createUiSlice(...a),
@@ -36,4 +38,5 @@ export const useStore = create<AppState>()((...a) => ({
   ...createPlanSlice(...a),
   ...createSpotSlice(...a),
   ...createFleetSlice(...a),
+  ...createPileSlice(...a),
 }));
