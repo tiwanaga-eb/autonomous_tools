@@ -209,7 +209,7 @@ export interface PilePlanResult {
   pile: { height_m: number; radius_m: number; volume_m3: number; repose_deg: number };
   centers: [number, number][];
   count: number;
-  spacing: { dx_m: number; dy_m: number; stagger: boolean };
+  spacing: { dx_m: number; dy_m: number; stagger: boolean; stagger_invert?: boolean };
   grid_angle_deg: number;
   edge_margin_m: number;
   area_m2: number;

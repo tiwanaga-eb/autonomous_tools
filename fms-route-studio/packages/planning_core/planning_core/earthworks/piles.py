@@ -143,13 +143,15 @@ def _dist_to_edges(x: float, y: float, poly: np.ndarray) -> float:
 
 
 def place_grid(polygon, dx: float, dy: float, *, edge_margin: float = 0.0,
-               stagger: bool = False, angle: float | None = None) -> np.ndarray:
+               stagger: bool = False, stagger_invert: bool = False,
+               angle: float | None = None) -> np.ndarray:
     """多角形内に格子状の点（パイル中心）を配置する。返値 (N,2)。
 
     - 格子の向き angle[rad]。None はエリアの最小外接矩形の主方向。
     - 端からいっぱいに: 矩形の min 端 + edge_margin から dx/dy で敷き詰める。
     - edge_margin: 中心が多角形の辺からこの距離以上（パイル基部を内側に収めるなら基部半径）。
-    - stagger: 千鳥（1行おきに dx/2 オフセット）。
+    - stagger: 千鳥（1行おきに dx/2 オフセット）。stagger_invert=True でオフセットする行を
+      逆（偶数行←→奇数行）にする＝千鳥の斜め方向が反転する。
     """
     poly = np.asarray(polygon, float)
     if len(poly) < 3 or dx <= 0 or dy <= 0:
@@ -166,8 +168,9 @@ def place_grid(polygon, dx: float, dy: float, *, edge_margin: float = 0.0,
     cc, ss = math.cos(a), math.sin(a)
     row = 0
     yy = y0
+    off_parity = 0 if stagger_invert else 1
     while yy <= y1 + 1e-9:
-        off = (dx / 2.0) if (stagger and row % 2 == 1) else 0.0
+        off = (dx / 2.0) if (stagger and row % 2 == off_parity) else 0.0
         xx = x0 + off
         while xx <= x1 + 1e-9:
             X = xx * cc - yy * ss
@@ -184,7 +187,8 @@ def plan_piles(polygon, *, repose_deg: float = 35.0,
                volume_m3: float | None = None, height_m: float | None = None,
                dx: float | None = None, dy: float | None = None,
                spread_thickness_m: float | None = None,
-               stagger: bool = False, edge_margin_m: float | None = None) -> dict:
+               stagger: bool = False, stagger_invert: bool = False,
+               edge_margin_m: float | None = None) -> dict:
     """エリア多角形へのパイル配置計画（間隔指定 or 撒き出し計算）。
 
     - 間隔指定: dx/dy を与える（dy 省略時は dx と同じ）。
@@ -214,7 +218,8 @@ def plan_piles(polygon, *, repose_deg: float = 35.0,
         dy = dx
 
     margin = float(edge_margin_m) if edge_margin_m is not None else spec.radius_m
-    centers = place_grid(poly, float(dx), float(dy), edge_margin=margin, stagger=stagger)
+    centers = place_grid(poly, float(dx), float(dy), edge_margin=margin,
+                         stagger=stagger, stagger_invert=stagger_invert)
     a, _cx, _cy, _w, _h = min_area_rect(poly)
     return {
         "pile": {
@@ -225,7 +230,8 @@ def plan_piles(polygon, *, repose_deg: float = 35.0,
         },
         "centers": [[round(float(x), 3), round(float(y), 3)] for x, y in centers],
         "count": int(len(centers)),
-        "spacing": {"dx_m": round(float(dx), 3), "dy_m": round(float(dy), 3), "stagger": bool(stagger)},
+        "spacing": {"dx_m": round(float(dx), 3), "dy_m": round(float(dy), 3),
+                    "stagger": bool(stagger), "stagger_invert": bool(stagger_invert)},
         "grid_angle_deg": round(math.degrees(a), 2),
         "edge_margin_m": round(margin, 3),
         "area_m2": round(area, 1),

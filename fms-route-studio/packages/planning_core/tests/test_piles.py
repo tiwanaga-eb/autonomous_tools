@@ -56,6 +56,26 @@ def test_place_grid_stagger_offsets_alternate_rows():
     assert min(rows[ys[1]]) == pytest.approx(5.0)  # 千鳥: 2行目は dx/2 オフセット
 
 
+def test_place_grid_stagger_invert_swaps_offset_rows():
+    """千鳥（逆）: オフセットする行が反転（1行目が dx/2、2行目が端から）＝斜め方向が逆になる。"""
+    poly = [[0, 0], [40, 0], [40, 20], [0, 20]]
+    pts = place_grid(poly, 5.0, 5.0, edge_margin=2.5, stagger=True, stagger_invert=True)
+    rows = {}
+    for x, y in pts:
+        rows.setdefault(round(y, 3), []).append(round(x, 3))
+    ys = sorted(rows)
+    assert min(rows[ys[0]]) == pytest.approx(5.0)   # 1行目がオフセット
+    assert min(rows[ys[1]]) == pytest.approx(2.5)   # 2行目は端から
+
+    # 通常の千鳥と行オフセットがちょうど入れ替わっている（鏡像パターン）
+    std = place_grid(poly, 5.0, 5.0, edge_margin=2.5, stagger=True)
+    rows_std = {}
+    for x, y in std:
+        rows_std.setdefault(round(y, 3), []).append(round(x, 3))
+    for i, yv in enumerate(ys):
+        assert (min(rows[yv]) == pytest.approx(5.0)) == (min(rows_std[yv]) == pytest.approx(2.5))
+
+
 def test_plan_piles_spacing_mode_rotated_area():
     # 回転エリアでも格子が主方向に整列して敷き詰められる
     ang = math.radians(20)

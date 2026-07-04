@@ -26,6 +26,8 @@ export function PilePanel() {
   const setDy = useStore((s) => s.setPileDy);
   const stagger = useStore((s) => s.pileStagger);
   const setStagger = useStore((s) => s.setPileStagger);
+  const staggerInv = useStore((s) => s.pileStaggerInv);
+  const setStaggerInv = useStore((s) => s.setPileStaggerInv);
   const spreadT = useStore((s) => s.pileSpreadT);
   const setSpreadT = useStore((s) => s.setPileSpreadT);
   const edgeMargin = useStore((s) => s.pileEdgeMarginM);
@@ -53,6 +55,7 @@ export function PilePanel() {
           dy_m: placeMode === "spacing" && dy > 0 ? dy : null,
           spread_thickness_m: placeMode === "spread" ? spreadT : null,
           stagger,
+          stagger_invert: staggerInv,
           edge_margin_m: edgeMargin >= 0 ? edgeMargin : null,
         });
         setPlan(res);
@@ -133,9 +136,20 @@ export function PilePanel() {
           <input type="number" step="0.5" min="-1" value={edgeMargin} onChange={(e) => setEdgeMargin(+e.target.value)} />
         </label>
       </div>
-      <label className="slider" style={{ flexDirection: "row", gap: 6, alignItems: "center" }}>
-        <input type="checkbox" checked={stagger} onChange={(e) => setStagger(e.target.checked)} />
-        <span>千鳥配置（1行おきに半間隔ずらす）</span>
+      <label title="1行おきに半間隔ずらす配置。「逆」はずらす行を反転（斜めの向きが逆になる）">
+        千鳥配置
+        <select
+          value={!stagger ? "off" : staggerInv ? "inv" : "std"}
+          onChange={(e) => {
+            const v = e.target.value;
+            setStagger(v !== "off");
+            setStaggerInv(v === "inv");
+          }}
+        >
+          <option value="off">なし（正方格子）</option>
+          <option value="std">千鳥</option>
+          <option value="inv">千鳥（方向を逆に）</option>
+        </select>
       </label>
 
       <div className="row" style={{ marginTop: 6 }}>
@@ -151,7 +165,7 @@ export function PilePanel() {
           <li><span>パイル</span><b>高さ {plan.pile.height_m} m・基部半径 {plan.pile.radius_m} m</b></li>
           <li><span>1パイル体積</span><b>{plan.pile.volume_m3} m³</b></li>
           <li><span>合計体積</span><b>{plan.total_volume_m3} m³</b></li>
-          <li><span>間隔</span><b>{plan.spacing.dx_m} × {plan.spacing.dy_m} m{plan.spacing.stagger ? "（千鳥）" : ""}</b></li>
+          <li><span>間隔</span><b>{plan.spacing.dx_m} × {plan.spacing.dy_m} m{plan.spacing.stagger ? (plan.spacing.stagger_invert ? "（千鳥・逆）" : "（千鳥）") : ""}</b></li>
           {plan.suggested_spacing_m != null && (
             <li><span>推奨間隔 √(V/t)</span><b>{plan.suggested_spacing_m} m</b></li>
           )}

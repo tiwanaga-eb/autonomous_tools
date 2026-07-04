@@ -276,6 +276,7 @@ export const api = {
     dy_m?: number | null;
     spread_thickness_m?: number | null;
     stagger?: boolean;
+    stagger_invert?: boolean;
     edge_margin_m?: number | null;
   }) => jpost<import("@/types/api").PilePlanResult>("/api/earthworks/piles", body),
 };

@@ -23,6 +23,7 @@ class PilePlanRequest(BaseModel):
     dy_m: float | None = Field(None, gt=0.0)           # 配置間隔（縦）省略時 dx と同じ
     spread_thickness_m: float | None = Field(None, gt=0.0)  # 撒き出し厚 t（指定時は間隔を自動計算）
     stagger: bool = False                              # 千鳥配置
+    stagger_invert: bool = False                       # 千鳥のオフセット行を逆に（斜め方向を反転）
     edge_margin_m: float | None = Field(None, ge=0.0)  # 縁マージン（None=パイル基部半径）
 
 
@@ -38,6 +39,7 @@ def piles(req: PilePlanRequest):
             dy=req.dy_m,
             spread_thickness_m=req.spread_thickness_m,
             stagger=req.stagger,
+            stagger_invert=req.stagger_invert,
             edge_margin_m=req.edge_margin_m,
         )
     except ValueError as e:

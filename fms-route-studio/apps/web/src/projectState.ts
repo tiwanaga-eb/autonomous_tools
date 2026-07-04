@@ -67,6 +67,7 @@ export function serializeProject(): Record<string, unknown> {
     pileDx: s.pileDx,
     pileDy: s.pileDy,
     pileStagger: s.pileStagger,
+    pileStaggerInv: s.pileStaggerInv,
     pileSpreadT: s.pileSpreadT,
     pileEdgeMarginM: s.pileEdgeMarginM,
     pilePlan: s.pilePlan,
@@ -139,6 +140,7 @@ export function applyProject(state: Record<string, unknown>): void {
   s.setPileDx(g("pileDx", 8));
   s.setPileDy(g("pileDy", 0));
   s.setPileStagger(g("pileStagger", false));
+  s.setPileStaggerInv(g("pileStaggerInv", false));
   s.setPileSpreadT(g("pileSpreadT", 0.5));
   s.setPileEdgeMarginM(g("pileEdgeMarginM", -1));
   s.setPilePlan(g("pilePlan", null));

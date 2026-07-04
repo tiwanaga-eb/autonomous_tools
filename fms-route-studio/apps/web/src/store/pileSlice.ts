@@ -15,6 +15,7 @@ export interface PileSlice {
   pileDx: number;                            // 配置間隔 横[m]
   pileDy: number;                            // 配置間隔 縦[m]（0=横と同じ）
   pileStagger: boolean;                      // 千鳥配置
+  pileStaggerInv: boolean;                   // 千鳥のオフセット行を逆に（斜め方向を反転）
   pileSpreadT: number;                       // 撒き出し厚 t[m]
   pileEdgeMarginM: number;                   // 縁マージン[m]（-1=自動: パイル基部半径）
   pilePlan: PilePlanResult | null;           // 直近の配置結果（地図に描画）
@@ -28,6 +29,7 @@ export interface PileSlice {
   setPileDx: (v: number) => void;
   setPileDy: (v: number) => void;
   setPileStagger: (v: boolean) => void;
+  setPileStaggerInv: (v: boolean) => void;
   setPileSpreadT: (v: number) => void;
   setPileEdgeMarginM: (v: number) => void;
   setPilePlan: (p: PilePlanResult | null) => void;
@@ -43,6 +45,7 @@ export const createPileSlice: StateCreator<AppState, [], [], PileSlice> = (set) 
   pileDx: 8,
   pileDy: 0,
   pileStagger: false,
+  pileStaggerInv: false,
   pileSpreadT: 0.5,
   pileEdgeMarginM: -1,
   pilePlan: null,
@@ -56,6 +59,7 @@ export const createPileSlice: StateCreator<AppState, [], [], PileSlice> = (set) 
   setPileDx: (pileDx) => set({ pileDx }),
   setPileDy: (pileDy) => set({ pileDy }),
   setPileStagger: (pileStagger) => set({ pileStagger }),
+  setPileStaggerInv: (pileStaggerInv) => set({ pileStaggerInv }),
   setPileSpreadT: (pileSpreadT) => set({ pileSpreadT }),
   setPileEdgeMarginM: (pileEdgeMarginM) => set({ pileEdgeMarginM }),
   setPilePlan: (pilePlan) => set({ pilePlan }),
