@@ -24,11 +24,16 @@ export interface Layer {
   filename?: string;
   cog?: string;
   epsg?: number;
-  crs_source?: "detected" | "assigned";
+  crs_source?: "detected" | "assigned" | "computed" | "user";
   width?: number;
   height?: number;
   bands?: number;
   geographic_bounds?: [number, number, number, number]; // [west, south, east, north]
+  // LAS→オルソ自動生成（las2ortho 内蔵化）
+  auto_ortho_id?: string;
+  ortho_error?: string;
+  source_las?: string; // 生成オルソの元 LAS
+  res_m?: number; // 生成オルソの解像度[m/px]
   // costmap 生成時のメタ
   density_pts_m2?: number;
   pts_per_cell?: number;

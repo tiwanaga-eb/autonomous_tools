@@ -121,10 +121,11 @@ def generate_costmap(req: CostmapRequest):
     if x.size == 0:
         raise HTTPException(422, "LAS has no points")
 
-    # LAS の CRS 解決: 明示指定 > ヘッダ > 経緯度ヒューリスティック > 作業ゾーン（そのまま）。
+    # LAS の CRS 解決: リクエスト明示指定 > レイヤメタ（PATCH /epsg のユーザー指定 or
+    # アップロード時ヘッダ検出）> ヘッダ > 経緯度ヒューリスティック > 作業ゾーン（そのまま）。
     # 規則は planning_core.io.resolve_las_epsg に一元化（点群3D表示と同一）。
     src_epsg, las_crs_source = resolve_las_epsg(
-        header_epsg, x, y, override=req.src_epsg, fallback=req.target_epsg
+        header_epsg, x, y, override=(req.src_epsg or las.get("epsg")), fallback=req.target_epsg
     )
     crs_note: str | None = None
     if las_crs_source == "assumed_wgs84":

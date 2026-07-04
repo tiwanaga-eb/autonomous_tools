@@ -163,15 +163,26 @@ export const api = {
 
   listLayers: () => jget<{ layers: Layer[] }>("/api/layers").then((d) => d.layers),
 
-  async uploadLayer(kind: string, file: File): Promise<Layer> {
+  async uploadLayer(kind: string, file: File, opts?: { makeOrtho?: boolean; srcEpsg?: number | null }): Promise<Layer> {
     const fd = new FormData();
     fd.append("file", file);
-    const r = await fetch(`/api/layers/${kind}`, { method: "POST", body: fd });
+    const q = new URLSearchParams();
+    if (opts?.makeOrtho != null) q.set("make_ortho", String(opts.makeOrtho));
+    if (opts?.srcEpsg) q.set("src_epsg", String(opts.srcEpsg));
+    const qs = q.toString();
+    const r = await fetch(`/api/layers/${kind}${qs ? `?${qs}` : ""}`, { method: "POST", body: fd });
     if (!r.ok) throw await toApiError(r);
     return (await r.json()) as Layer;
   },
 
   deleteLayer: (id: string) => jdelete(`/api/layers/${id}`),
+
+  // LAS の座標系を後付け指定（ヘッダ CRS 欠落の現場 LAS 向け。null で解除）
+  setLayerEpsg: (id: string, epsg: number | null) =>
+    request<Layer>("PATCH", `/api/layers/${id}/epsg${epsg ? `?epsg=${epsg}` : ""}`),
+  // LAS からオルソを（再）生成（res 省略で点密度から自動）
+  makeOrthoFromLas: (id: string, res?: number) =>
+    jpost<Layer>(`/api/layers/${id}/ortho${res ? `?res=${res}` : ""}`, undefined),
 
   tileUrlTemplate: (id: string) => `/api/tiles/${id}/{z}/{x}/{y}.png`,
   previewUrl: (id: string) => `/api/layers/${id}/preview.png`,

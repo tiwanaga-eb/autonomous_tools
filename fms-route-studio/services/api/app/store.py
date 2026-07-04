@@ -49,6 +49,22 @@ def add_layer(meta: dict) -> dict:
     return meta
 
 
+def update_layer(layer_id: str, patch: dict) -> dict | None:
+    """レイヤメタへ部分更新をマージして保存（値 None のキーは削除）。無ければ None。"""
+    with _LOCK:
+        reg = _load()
+        meta = reg["layers"].get(layer_id)
+        if meta is None:
+            return None
+        for k, v in patch.items():
+            if v is None:
+                meta.pop(k, None)
+            else:
+                meta[k] = v
+        _save(reg)
+    return meta
+
+
 def list_layers() -> list[dict]:
     return list(_load()["layers"].values())
 

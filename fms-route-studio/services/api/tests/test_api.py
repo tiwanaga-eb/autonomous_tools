@@ -1095,3 +1095,61 @@ def test_spotting_require_switchback_with_zero_max_is_forward_only():
     assert r.status_code == 200
     body = r.json()
     assert body["metrics"]["n_switchbacks"] == 0
+
+
+def test_las_upload_auto_generates_ortho(tmp_path):
+    """LAS 取り込みで オルソ が自動生成される（las2ortho 内蔵化）。RGB 無し LAS は Z グレー。"""
+    p = tmp_path / "auto_ortho.las"
+    _make_las(p)
+    with open(p, "rb") as f:
+        body = client.post("/api/layers/las", files={"file": (p.name, f, "application/octet-stream")}).json()
+    assert body.get("ortho_error") is None, body.get("ortho_error")
+    oid = body.get("auto_ortho_id")
+    assert oid, "auto_ortho_id should be set"
+    om = client.get(f"/api/layers/{oid}").json()
+    assert om["kind"] == "ortho" and om["source_las"] == body["id"]
+    assert om["bands"] == 3 and om["width"] > 0 and om["height"] > 0
+    # プレビューが描画できる（COG として妥当）
+    pv = client.get(f"/api/layers/{oid}/preview.png")
+    assert pv.status_code == 200 and pv.content[:8] == PNG_MAGIC
+    client.delete(f"/api/layers/{oid}")
+    client.delete(f"/api/layers/{body['id']}")
+
+
+def test_las_epsg_patch_moves_ortho_and_costmap(tmp_path):
+    """CRS 無し LAS に PATCH /epsg で座標系を後付け → オルソ/コストマップの配置が変わる。
+
+    現場 LAS はヘッダ CRS 欠落が常態（las2ortho も override_srs 前提）。指定後の再生成で
+    正しい位置に移動できることを固定化する。
+    """
+    p = tmp_path / "noepsg.las"
+    _make_las(p)  # ヘッダ CRS なし・メートル座標 → 既定は「作業CRSのまま」
+    with open(p, "rb") as f:
+        body = client.post(
+            "/api/layers/las?make_ortho=false",
+            files={"file": (p.name, f, "application/octet-stream")},
+        ).json()
+    lid = body["id"]
+    assert body.get("epsg") is None  # ヘッダ CRS なし
+
+    o1 = client.post(f"/api/layers/{lid}/ortho").json()  # 作業CRSのまま解釈
+    r = client.patch(f"/api/layers/{lid}/epsg?epsg=6675")  # 実は7系だったと後付け指定
+    assert r.status_code == 200
+    meta = client.get(f"/api/layers/{lid}").json()
+    assert meta["epsg"] == 6675 and meta["crs_source"] == "user"
+
+    o2 = client.post(f"/api/layers/{lid}/ortho").json()  # 指定後の再生成
+    # 7系→9系の再投影で経度が大きく変わる（zone VII 原点 137.17E vs zone IX 139.83E）
+    assert abs(o1["geographic_bounds"][0] - o2["geographic_bounds"][0]) > 1.0
+
+    cm = client.post(
+        "/api/costmap",
+        json={"las_layer_id": lid, "target_epsg": 6677, "params": {"grid_size_m": 1.0}},
+    ).json()
+    assert cm["las_src_epsg"] == 6675 and cm["las_crs_source"] == "specified"
+
+    # 指定解除 → ヘッダ/推定に戻る
+    r = client.patch(f"/api/layers/{lid}/epsg")
+    assert r.status_code == 200 and client.get(f"/api/layers/{lid}").json().get("epsg") is None
+    for i in (o1["id"], o2["id"], cm["id"], lid):
+        client.delete(f"/api/layers/{i}")
