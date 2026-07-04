@@ -125,7 +125,14 @@
 
 対象: UX / 車両運動特性 / UI / コード / アーキテクチャ / テスト。
 4視点（車両運動・BEアーキ・FE/UX・テスト）の独立レビューを統合し、疑わしい指摘はコードで裏取りした上で記載。
-**本節は指摘のみ（未実装）。実施順は 5.6 の提案参照。**
+
+**対応状況（2026-07-04 実装完了・全11コミット）**: P1〜P5 を承認順に実施済み。
+- ✅ K2 cusp実効マージン診断（min_cusp_margin_m＋UI警告） / K3 積載時decel（max_decel_loaded、fleetは保守側） / K4 skid近似のwarning/note
+- ✅ U1 NumberField統一＋日本語化（Drivable×7/Fleet×4/Spotting×1。VehiclePanelは文字列state方式でバグ対象外と判明し維持） / U2 点群ロードbusy / U3 進捗ドット（寄り付き/排土/複数台）
+- ✅ B1+B8 resolve_las_epsg一元化 / B3 stationary.py分離（spotting.py 1114→942行） / B5 points.binチャンク送出
+- ✅ T-A agentActions/ioテスト / T-C hybrid決定性+狭所Uターン / T-D 負系（壊れLAS 422早期拒否ガード追加・未知vehicle 404・矛盾指定） / T-E NumberField純関数化+テスト
+- ✅ P5 文書（DESIGN §2.7 運動学近似の既知の制約・§7 CRS単一ユーザー前提、HM400.yaml/velocity.py/models注記）
+- 検証: planning_core 188 / api 86 / web 55 全通過。未対応で残るのは K1 v2（アーティキュレート厳密化）と B4（endpoint-marginコストのプロファイル）、B6/B7、T-F/T-G（Low）。
 
 ### 5.0 規模・実行時間スナップショット
 
