@@ -130,6 +130,16 @@ def test_spotting_cusp_has_straight_margin():
     before = straight_run(range(ci - 1, -1, -1))   # cusp から前方(forward側)へ遡る
     after = straight_run(range(ci, len(pts)))       # cusp から後方(reverse側)へ進む
     assert before >= 2 and after >= 2  # 切り返し点の前後とも直線マージンがある
+    # 診断値: 実効 cusp マージンが指定 margin に対して妥当な範囲で報告される
+    assert res.min_cusp_margin_m is not None
+    assert res.min_cusp_margin_m >= margin * 0.5
+
+
+def test_spotting_min_cusp_margin_none_when_forward_only():
+    """内部 cusp が無い（前進のみ）経路では min_cusp_margin_m=None（診断対象外）。"""
+    res = plan_spotting((0.0, 0.0, 0.0), (40.0, 5.0, 0.0), rho=6.0, max_switchbacks=0)
+    assert res.n_switchbacks == 0
+    assert res.min_cusp_margin_m is None
 
 
 def test_spotting_switchback_zone_filters_cusp():

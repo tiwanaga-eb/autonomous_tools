@@ -140,9 +140,14 @@ export function SpottingPanel() {
       // 狭所で直線化できなかった端は ⚠ で明示（設定が無視されたのではなく幾何的に不可）。
       const l0 = res.endpoint_margin_start_m ?? 0;
       const lN = res.endpoint_margin_goal_m ?? 0;
+      // 内部cusp（切り返し点）の実効直線マージン最小値。狭所では挿入が自動短縮/スキップされる
+      // ため、禁止設定でも据え切りが必要な cusp が残り得る → 明示的に警告する。
+      const mc = res.min_cusp_margin_m;
+      const cuspWarn =
+        !res.allow_stationary && mc != null && mc < 0.5 ? ` / ⚠切返し点に直線マージン不足(最小${mc}m)=据え切り必要` : "";
       const ss = res.allow_stationary
         ? "据え切り許可"
-        : `据え切り回避(端点直線 開始${l0 > 0 ? `${l0}m` : "⚠不可"} / 到着${lN > 0 ? `${lN}m` : "⚠不可"})`;
+        : `据え切り回避(端点直線 開始${l0 > 0 ? `${l0}m` : "⚠不可"} / 到着${lN > 0 ? `${lN}m` : "⚠不可"}${cuspWarn})`;
       setStatus(
         res.feasible
           ? `寄り付き: ${m.length_total_m}m / ${m.time_total_s}s / 切返${m.n_switchbacks}回 / 誤差${m.approach_error_m}m ・ ${ss}`

@@ -318,6 +318,7 @@ def _result_dict(res, rho: float, footprint: float) -> dict:
         "allow_stationary": getattr(res, "allow_stationary", True),
         "endpoint_margin_start_m": _fin(getattr(res, "endpoint_margin_start_m", 0.0), 2),
         "endpoint_margin_goal_m": _fin(getattr(res, "endpoint_margin_goal_m", 0.0), 2),
+        "min_cusp_margin_m": _fin(getattr(res, "min_cusp_margin_m", None), 2),
         "feasible": res.feasible,
         "status": res.status,
         "reason": _reason(res, footprint),

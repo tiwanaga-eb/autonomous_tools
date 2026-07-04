@@ -198,6 +198,8 @@ export interface SpotResult {
   allow_stationary?: boolean;
   endpoint_margin_start_m?: number;
   endpoint_margin_goal_m?: number;
+  // 内部cusp(切り返し点)の実効直線マージン最小値[m]。null=内部cuspなし。~0=狭所で挿入不可（据え切り必要）
+  min_cusp_margin_m?: number | null;
   // 経路と同じ軌跡解析＋安全検証（寄り付きにも付与）
   trajectory?: Trajectory;
   analysis?: AnalysisResult;

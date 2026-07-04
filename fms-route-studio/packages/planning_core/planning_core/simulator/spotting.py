@@ -66,6 +66,7 @@ class SpottingResult:
     allow_stationary: bool = True          # 据え切り(端点その場操舵)を許したか（解決後の実効値）
     endpoint_margin_start_m: float = 0.0   # 出発端に入れた直線リードイン長[m]（0=なし＝据え切り）
     endpoint_margin_goal_m: float = 0.0    # 到着端に入れた直線リードアウト長[m]（0=なし＝据え切り）
+    min_cusp_margin_m: float | None = None  # 内部cusp(切り返し点)の実効直線マージン最小値[m]（None=内部cuspなし。~0=狭所で挿入不可＝据え切り必要）
 
 
 def _polyline_len(pts: np.ndarray) -> float:
@@ -158,6 +159,35 @@ def _apply_cusp_margins(segments, margin: float, step: float, fp_ok=None):
         segs[k] = (_straight_pts(Pp, P, step) + cp[1:], cg)  # 現セグ: Pp→P 直進(後進)＋元の続き
         segs[k - 1] = (pp, pg)
     return segs
+
+
+def _cusp_margins_of(points: list[dict]) -> list[float]:
+    """内部 cusp（ギア反転点）ごとの実効直線マージン[m]を最終点列から実測する（診断用）。
+
+    _adapt_margin は狭所でマージンを短縮・スキップ（=0）し得るが、その事実は挿入時に
+    記録されない。そこで解決後の点列から cusp 前後の「方位ドリフト2°以内の弧長」を測り、
+    短い側をその cusp の実効マージンとする。~0 は据え切りが必要な cusp を意味し、
+    据え切り禁止時の UI 警告に使う。
+    """
+    out: list[float] = []
+    n = len(points)
+    for i in range(1, n):
+        if points[i]["gear"] == points[i - 1]["gear"]:
+            continue
+        h0 = points[i - 1]["heading_deg"]
+
+        def _run(idxs, base_s):
+            r = 0.0
+            for j in idxs:
+                if abs((points[j]["heading_deg"] - h0 + 180.0) % 360.0 - 180.0) > 2.0:
+                    break
+                r = abs(points[j]["s"] - base_s)
+            return r
+
+        back = _run(range(i - 1, -1, -1), points[i - 1]["s"])
+        fwd = _run(range(i, n), points[i]["s"])
+        out.append(min(back, fwd))
+    return out
 
 
 def _stage_segments(start, S, Syaw, target, rho, step, margin, fp_ok=None,
@@ -508,6 +538,9 @@ def _build(segments, speed_fwd, speed_rev, transform, mask, dt, cost, obstacle_v
     if tyaw is not None and states:
         d = (states[-1]["heading_deg"] - math.degrees(tyaw)) % 360.0
         err_deg = float(min(d, 360.0 - d))
+    # 内部 cusp の実効直線マージン（診断）。manual_switch_pose 等の early-return 経路も
+    # 含め全結果に付くよう、最終選択時ではなくここで実測する。
+    cms = _cusp_margins_of(states) if switch_points else []
     res = SpottingResult(
         points=states, switch_points=switch_points,
         length_total=length_fwd + length_rev, length_fwd=length_fwd, length_rev=length_rev,
@@ -517,6 +550,7 @@ def _build(segments, speed_fwd, speed_rev, transform, mask, dt, cost, obstacle_v
         total_turn_rad=total_turn,
         approach_error_m=float(np.hypot(states[-1]["x"] - tx, states[-1]["y"] - ty)) if states else 1e9,
         approach_error_deg=err_deg,
+        min_cusp_margin_m=(round(min(cms), 2) if cms else None),
     )
     # フットプリント包含（向き付き）が使えるならそれをハード制約に。狭窄エリアで切り返し点を
     # 含む全姿勢の車体がエリア内に収まるかを厳密判定する（ユーザー要件）。
