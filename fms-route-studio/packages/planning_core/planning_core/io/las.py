@@ -123,6 +123,15 @@ def _read_las_chunked(
     return x, y, z, rgb, epsg
 
 
+def las_header_epsg(path: str | Path) -> int | None:
+    """LAS ヘッダの CRS(EPSG) だけを読む（点データは読まない＝軽量。無ければ None）。"""
+    try:
+        with laspy.open(str(path)) as reader:
+            return _parse_epsg(reader.header)
+    except Exception:
+        return None
+
+
 def read_las_xyz(
     path: str | Path,
     max_points: int | None = DEFAULT_MAX_POINTS,

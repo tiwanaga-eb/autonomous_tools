@@ -121,7 +121,20 @@ def generate_costmap(req: CostmapRequest):
     if x.size == 0:
         raise HTTPException(422, "LAS has no points")
 
-    src_epsg = req.src_epsg or header_epsg or req.target_epsg
+    # LAS の CRS 解決: 明示指定 > ヘッダ > 経緯度ヒューリスティック > 作業ゾーン（そのまま）。
+    # WGS84 の LAS はヘッダに CRS が無いことが多く、従来はメートル扱いで壊れていた。
+    # 全点が |x|<=180 かつ |y|<=90 なら経緯度（WGS84, EPSG:4326）と推定して再投影する。
+    src_epsg = req.src_epsg or header_epsg
+    crs_note: str | None = None
+    if src_epsg:
+        las_crs_source = "specified" if req.src_epsg else "header"
+    elif float(np.abs(x).max()) <= 180.0 and float(np.abs(y).max()) <= 90.0:
+        src_epsg = 4326
+        las_crs_source = "assumed_wgs84"
+        crs_note = "LASヘッダにCRSが無いため経緯度(WGS84)と推定して再投影しました。違う場合は「LASのCRS」を指定して再生成してください。"
+    else:
+        src_epsg = req.target_epsg
+        las_crs_source = "assumed_working"
     if int(src_epsg) != int(req.target_epsg):
         xy = project(np.column_stack([x, y]), int(src_epsg), int(req.target_epsg))
         x, y = xy[:, 0], xy[:, 1]
@@ -140,6 +153,8 @@ def generate_costmap(req: CostmapRequest):
             f" 実用解像度は約 {recommended_grid}m。grid>={recommended_grid}m を推奨"
             f"（細かいgridでは cost が補間アーティファクトになり信頼できません）。"
         )
+    if crs_note:
+        warning = f"{warning} / {crs_note}" if warning else crs_note
 
     out = build_costmap_arrays(x, y, z, req.params)
     cost = out["cost"]
@@ -178,6 +193,8 @@ def generate_costmap(req: CostmapRequest):
         "dsm_cog": dsm_cog,          # 勾配解析の入力（§10）
         "epsg": int(req.target_epsg),
         "crs_source": "computed",
+        "las_src_epsg": int(src_epsg),        # LAS座標をどのCRSとして読んだか
+        "las_crs_source": las_crs_source,     # specified / header / assumed_wgs84 / assumed_working
         "width": int(cost.shape[1]),
         "height": int(cost.shape[0]),
         "bands": 4,

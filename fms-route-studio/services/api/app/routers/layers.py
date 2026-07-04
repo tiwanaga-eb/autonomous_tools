@@ -57,7 +57,10 @@ def las_points(layer_id: str, max_points: int = 200000):
     xyz, rgb, epsg = read_las_points(meta["source"], max_points=max(1000, min(max_points, 600000)))
     if xyz.shape[0] == 0:
         raise HTTPException(422, "LAS has no points")
-    # 作業CRS(6677)へ（ヘッダEPSGがあり異なる場合のみ再投影。無ければ既に6677想定）
+    # 作業CRSへ再投影。ヘッダに CRS が無くても、全点が経緯度らしき範囲（|x|<=180, |y|<=90）
+    # なら WGS84(4326) と推定して変換する（WGS84 の LAS はヘッダ CRS 欠落が多い）。
+    if not epsg and float(np.abs(xyz[:, 0]).max()) <= 180.0 and float(np.abs(xyz[:, 1]).max()) <= 90.0:
+        epsg = 4326
     if epsg and int(epsg) != get_working_epsg():
         xy = project(xyz[:, :2], int(epsg), get_working_epsg())
         xyz = np.column_stack([xy, xyz[:, 2]])
@@ -129,6 +132,15 @@ async def upload_layer(
         "filename": file.filename,
         "source": str(src),
     }
+
+    if kind == "las":
+        # ヘッダの CRS を検出してメタに記録（コストマップ生成の既定 src・FE 表示用）。
+        from planning_core.io import las_header_epsg
+
+        det = las_header_epsg(src)
+        if det:
+            meta["epsg"] = int(det)
+            meta["crs_source"] = "detected"
 
     if kind in RASTER_KINDS:
         with rasterio.open(src) as ds:

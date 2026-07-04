@@ -30,7 +30,8 @@ export function CostmapPanel() {
   const [gridSize, setGridSize] = useState(0.3);
   const [slopeLimit, setSlopeLimit] = useState(15);
   const [canopyRef, setCanopyRef] = useState(1.0);
-  const [srcEpsg, setSrcEpsg] = useState(WORKING_EPSG);
+  // LAS の CRS。0=自動（ヘッダ検出→無ければ経緯度判定でWGS84推定→作業ゾーン）。
+  const [srcEpsg, setSrcEpsg] = useState(0);
   const [wSlope, setWSlope] = useState(500);
   const [wRough, setWRough] = useState(100);
   const [roughWindow, setRoughWindow] = useState(1.0);
@@ -47,7 +48,7 @@ export function CostmapPanel() {
       setStatus("コストマップ生成中（傾斜/粗さ → cost + DSM）…");
       const cost = await api.generateCostmap({
         las_layer_id: lasLayerId,
-        src_epsg: srcEpsg,
+        ...(srcEpsg > 0 ? { src_epsg: srcEpsg } : {}),  // 0=自動（ヘッダ/経緯度推定に委ねる）
         target_epsg: WORKING_EPSG,
         params: {
           grid_size_m: gridSize,
@@ -102,10 +103,28 @@ export function CostmapPanel() {
           veg ref (m)
           <input type="number" step="0.5" value={canopyRef} onChange={(e) => setCanopyRef(+e.target.value)} />
         </label>
-        <label>
-          LAS EPSG
-          <input type="number" step="1" value={srcEpsg} onChange={(e) => setSrcEpsg(+e.target.value)} />
+        <label title="LAS座標のCRS。自動=ヘッダのCRSを使用（無ければ経緯度らしき値ならWGS84と推定、それ以外は作業ゾーンのまま）。WGS84のLASもここが「自動」か「WGS84」なら作業ゾーンへ変換されます">
+          LASのCRS
+          <select
+            value={srcEpsg === 0 || srcEpsg === 4326 || srcEpsg === WORKING_EPSG ? String(srcEpsg) : "custom"}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === "custom") setSrcEpsg(6677 === WORKING_EPSG ? 6675 : 6677);
+              else setSrcEpsg(+v);
+            }}
+          >
+            <option value="0">自動（ヘッダ / 経緯度は WGS84 と推定）</option>
+            <option value="4326">WGS84 経緯度 (EPSG:4326)</option>
+            <option value={String(WORKING_EPSG)}>作業ゾーン (EPSG:{WORKING_EPSG})</option>
+            <option value="custom">その他（EPSG直接指定）</option>
+          </select>
         </label>
+        {srcEpsg !== 0 && srcEpsg !== 4326 && srcEpsg !== WORKING_EPSG && (
+          <label>
+            EPSG コード
+            <input type="number" step="1" min="1000" value={srcEpsg} onChange={(e) => setSrcEpsg(+e.target.value)} />
+          </label>
+        )}
         <label>
           w_slope（傾斜重み）
           <input type="number" step="50" value={wSlope} onChange={(e) => setWSlope(+e.target.value)} />

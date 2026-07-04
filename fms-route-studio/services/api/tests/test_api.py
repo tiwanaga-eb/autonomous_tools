@@ -806,6 +806,45 @@ def test_earthworks_pile_plan():
     assert r3.status_code == 400
 
 
+def test_costmap_from_wgs84_las_auto_reprojects(tmp_path):
+    """WGS84（ヘッダCRS無し・経緯度座標）の LAS が自動で作業ゾーンへ再投影される回帰。
+
+    従来は src_epsg 未指定＋ヘッダ CRS 無しだと度をメートル扱いして壊れていた。
+    経緯度らしき範囲（|x|<=180, |y|<=90）は WGS84 と推定して再投影する。
+    """
+    import rasterio
+
+    from planning_core.geometry import project
+
+    xs = np.linspace(30000.0, 30050.0, 40)
+    ys = np.linspace(119000.0, 119040.0, 30)
+    X, Y = np.meshgrid(xs, ys)
+    ll = project(np.column_stack([X.ravel(), Y.ravel()]), 6677, 4326)  # lon/lat（度）
+    h = laspy.LasHeader(point_format=3, version="1.4")  # CRS はあえて付けない
+    h.offsets = [float(ll[:, 0].min()), float(ll[:, 1].min()), 0.0]
+    h.scales = [1e-7, 1e-7, 0.001]
+    las = laspy.LasData(h)
+    las.x, las.y, las.z = ll[:, 0], ll[:, 1], np.zeros(len(ll))
+    p = tmp_path / "wgs84.las"
+    las.write(str(p))
+
+    with open(p, "rb") as f:
+        las_id = client.post("/api/layers/las", files={"file": ("wgs84.las", f, "application/octet-stream")}).json()["id"]
+    r = client.post("/api/costmap", json={"las_layer_id": las_id, "target_epsg": 6677,
+                                          "params": {"grid_size_m": 2.0}})
+    assert r.status_code == 200, r.text
+    m = r.json()
+    assert m["las_crs_source"] == "assumed_wgs84"
+    assert "推定" in (m.get("warning") or "")
+    with rasterio.open(m["cost_cog"]) as ds:
+        b = ds.bounds
+    # 度をメートル扱いしていれば範囲は ~1e2 の度数域。作業ゾーンの元座標(±5m)に一致すること。
+    assert abs(b.left - 30000.0) < 5.0 and abs(b.top - 119040.0) < 5.0
+
+    client.delete(f"/api/layers/{m['id']}")
+    client.delete(f"/api/layers/{las_id}")
+
+
 def test_costmap_from_las(tmp_path):
     p = tmp_path / "c.las"
     _make_las(p)
