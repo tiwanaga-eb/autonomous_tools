@@ -200,6 +200,8 @@ export function App() {
                       <option value={1_000_000}>100万</option>
                       <option value={2_000_000}>200万</option>
                       <option value={4_000_000}>400万</option>
+                      <option value={8_000_000}>800万</option>
+                      <option value={16_000_000}>1600万</option>
                     </select>
                   </label>
                 </>

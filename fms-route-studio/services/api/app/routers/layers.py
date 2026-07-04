@@ -80,7 +80,8 @@ def las_points_bin(layer_id: str, max_points: int = 1_000_000):
     meta = store.get_layer(layer_id)
     if not meta or meta.get("kind") != "las" or not meta.get("source"):
         raise HTTPException(404, "LAS layer not found")
-    xyz, rgb = _load_las_points_working(meta, max_points=max(1000, min(max_points, 4_000_000)))
+    # 上限16M点（15B/点 → 最大~240MB応答。ローカル運用＋バイナリ転送前提。ファイル総点数が上限）
+    xyz, rgb = _load_las_points_working(meta, max_points=max(1000, min(max_points, 16_000_000)))
     ox = float(xyz[:, 0].min() + xyz[:, 0].max()) / 2.0
     oy = float(xyz[:, 1].min() + xyz[:, 1].max()) / 2.0
     zmin, zmax = float(xyz[:, 2].min()), float(xyz[:, 2].max())
