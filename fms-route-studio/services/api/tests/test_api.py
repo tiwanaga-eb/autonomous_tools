@@ -806,6 +806,37 @@ def test_earthworks_pile_plan():
     assert r3.status_code == 400
 
 
+def test_las_points_bin_roundtrip(tmp_path):
+    """バイナリ点群: ヘッダ解析→origin相対f32から絶対座標を復元し、JSON版と一致（±2cm）。"""
+    import struct
+
+    p = tmp_path / "c.las"
+    _make_las(p)
+    with open(p, "rb") as f:
+        las_id = client.post("/api/layers/las", files={"file": ("c.las", f, "application/octet-stream")}).json()["id"]
+
+    rb = client.get(f"/api/layers/{las_id}/points.bin", params={"max_points": 5000})
+    assert rb.status_code == 200 and rb.headers["content-type"].startswith("application/octet-stream")
+    buf = rb.content
+    magic, ver, has_rgb, _pad, n, ox, oy, oz, zmin, zmax = struct.unpack_from("<4sBBHI5d", buf, 0)
+    assert magic == b"FRSP" and ver == 1 and n > 0
+    off = struct.calcsize("<4sBBHI5d")
+    xs = np.frombuffer(buf, dtype="<f4", count=n, offset=off)
+    ys = np.frombuffer(buf, dtype="<f4", count=n, offset=off + 4 * n)
+    zs = np.frombuffer(buf, dtype="<f4", count=n, offset=off + 8 * n)
+    assert len(buf) == off + 12 * n + (3 * n if has_rgb else 0)
+    ax, ay = xs + ox, ys + oy
+    assert 29999.0 <= ax.min() and ax.max() <= 30051.0
+    assert 118999.0 <= ay.min() and ay.max() <= 119041.0
+    assert zmin <= float(zs.min() + oz) + 1e-3 and float(zs.max() + oz) <= zmax + 1e-3
+
+    rj = client.get(f"/api/layers/{las_id}/points", params={"max_points": 5000}).json()
+    assert rj["n"] == n
+    assert abs(rj["x"][0] - float(ax[0])) < 0.02 and abs(rj["y"][0] - float(ay[0])) < 0.02
+
+    client.delete(f"/api/layers/{las_id}")
+
+
 def test_costmap_from_wgs84_las_auto_reprojects(tmp_path):
     """WGS84（ヘッダCRS無し・経緯度座標）の LAS が自動で作業ゾーンへ再投影される回帰。
 

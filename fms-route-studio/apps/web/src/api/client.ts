@@ -80,6 +80,44 @@ export interface DrivableParams {
 export type PlanMode = "auto" | "waypoint_guided";
 export type Algorithm = "spline" | "dubins" | "grid_astar" | "hybrid_astar" | "reeds_shepp" | "rrt_star";
 
+// 3D 点群（/points.bin のバイナリを展開したもの）。x/y/z は origin 相対 [m]。
+export interface PointCloud {
+  n: number;
+  origin: [number, number, number];
+  x: Float32Array;
+  y: Float32Array;
+  z: Float32Array;
+  rgb: Uint8Array | null; // n*3, 0-255
+  zmin: number;
+  zmax: number;
+}
+
+/** /points.bin のバイナリレイアウトを PointCloud に展開する（layers.py と対）。 */
+export function parsePointsBin(buf: ArrayBuffer): PointCloud {
+  const dv = new DataView(buf);
+  const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
+  if (magic !== "FRSP" || dv.getUint8(4) !== 1) throw new Error("点群バイナリの形式が不正です");
+  const hasRgb = dv.getUint8(5) === 1;
+  const n = dv.getUint32(8, true);
+  const ox = dv.getFloat64(12, true);
+  const oy = dv.getFloat64(20, true);
+  const oz = dv.getFloat64(28, true);
+  const zmin = dv.getFloat64(36, true);
+  const zmax = dv.getFloat64(44, true);
+  const off = 52;
+  if (buf.byteLength < off + 12 * n + (hasRgb ? 3 * n : 0)) throw new Error("点群バイナリが途中で切れています");
+  return {
+    n,
+    origin: [ox, oy, oz],
+    x: new Float32Array(buf, off, n),
+    y: new Float32Array(buf, off + 4 * n, n),
+    z: new Float32Array(buf, off + 8 * n, n),
+    rgb: hasRgb ? new Uint8Array(buf, off + 12 * n, 3 * n) : null,
+    zmin,
+    zmax,
+  };
+}
+
 // AI アシスタント（§14）。サーバの tool-use が返す「操作」を FE が適用する。
 export interface AgentAction {
   type: string;
@@ -194,6 +232,13 @@ export const api = {
       n: number; x: number[]; y: number[]; z: number[];
       has_rgb: boolean; rgb: number[][] | null; zmin: number; zmax: number;
     }>(`/api/layers/${lasLayerId}/points?max_points=${maxPoints}`, signal),
+
+  // バイナリ点群（JSON の ~1/10 サイズ・大点数向け）。origin 相対 f32 → PointCloud に展開。
+  layerPointsBin: async (lasLayerId: string, maxPoints = 1_000_000, signal?: AbortSignal): Promise<PointCloud> => {
+    const r = await fetch(`/api/layers/${lasLayerId}/points.bin?max_points=${maxPoints}`, { signal });
+    if (!r.ok) throw await toApiError(r);
+    return parsePointsBin(await r.arrayBuffer());
+  },
 
   dsmGrid: (costLayerId: string, maxSize = 160, signal?: AbortSignal) =>
     jget<{

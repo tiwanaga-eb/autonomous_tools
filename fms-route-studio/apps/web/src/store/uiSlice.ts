@@ -21,6 +21,7 @@ export interface UiSlice {
   view3d: boolean; // 中央ビューを 2D地図 / 3D に切替
   view3dMode: "points" | "mesh"; // 3Dの表示: LAS点群 / DSM地形メッシュ
   pointSize: number; // 点群の点サイズ[px]
+  pointBudget: number; // 3D点群の表示点数上限（バイナリ転送で大点数可）
   vExag: number;   // 3Dの鉛直強調倍率
 
   setActiveFeature: (f: FeatureId) => void;
@@ -37,6 +38,7 @@ export interface UiSlice {
   setView3d: (v: boolean) => void;
   setView3dMode: (v: "points" | "mesh") => void;
   setPointSize: (v: number) => void;
+  setPointBudget: (v: number) => void;
   setVExag: (v: number) => void;
 }
 
@@ -57,6 +59,7 @@ export const createUiSlice: StateCreator<AppState, [], [], UiSlice> = (set) => (
   view3d: false,
   view3dMode: "points",
   pointSize: 2.0,
+  pointBudget: 1_000_000,
   vExag: 1.0,
 
   // 工程を切り替えたら編集モードを中立(pan)へ戻す（前工程のモードが地図クリックに漏れるのを防ぐ）
@@ -75,5 +78,6 @@ export const createUiSlice: StateCreator<AppState, [], [], UiSlice> = (set) => (
   setView3d: (view3d) => set({ view3d }),
   setView3dMode: (view3dMode) => set({ view3dMode }),
   setPointSize: (pointSize) => set({ pointSize }),
+  setPointBudget: (pointBudget) => set({ pointBudget }),
   setVExag: (vExag) => set({ vExag }),
 });

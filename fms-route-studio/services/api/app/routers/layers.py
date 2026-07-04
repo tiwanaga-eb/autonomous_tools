@@ -9,7 +9,7 @@ import shutil
 import numpy as np
 import rasterio
 from affine import Affine
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
@@ -45,25 +45,62 @@ def delete_layer(layer_id: str):
     return {"ok": True}
 
 
-@router.get("/{layer_id}/points")
-def las_points(layer_id: str, max_points: int = 200000):
-    """3D表示用に LAS 点群を間引いて返す（XYZ＝作業CRS[m]、RGBがあれば0-255）。"""
+def _load_las_points_working(meta: dict, max_points: int) -> tuple[np.ndarray, np.ndarray | None]:
+    """LAS を間引き読みし作業CRSへ再投影して (xyz(N,3), rgb(N,3)uint8|None) を返す。
+
+    ヘッダに CRS が無くても、全点が経緯度らしき範囲（|x|<=180, |y|<=90）なら WGS84(4326)
+    と推定して変換する（WGS84 の LAS はヘッダ CRS 欠落が多い）。
+    """
     from planning_core.geometry import project
     from planning_core.io import read_las_points
 
-    meta = store.get_layer(layer_id)
-    if not meta or meta.get("kind") != "las" or not meta.get("source"):
-        raise HTTPException(404, "LAS layer not found")
-    xyz, rgb, epsg = read_las_points(meta["source"], max_points=max(1000, min(max_points, 600000)))
+    xyz, rgb, epsg = read_las_points(meta["source"], max_points=max_points)
     if xyz.shape[0] == 0:
         raise HTTPException(422, "LAS has no points")
-    # 作業CRSへ再投影。ヘッダに CRS が無くても、全点が経緯度らしき範囲（|x|<=180, |y|<=90）
-    # なら WGS84(4326) と推定して変換する（WGS84 の LAS はヘッダ CRS 欠落が多い）。
     if not epsg and float(np.abs(xyz[:, 0]).max()) <= 180.0 and float(np.abs(xyz[:, 1]).max()) <= 90.0:
         epsg = 4326
     if epsg and int(epsg) != get_working_epsg():
         xy = project(xyz[:, :2], int(epsg), get_working_epsg())
         xyz = np.column_stack([xy, xyz[:, 2]])
+    return xyz, rgb
+
+
+@router.get("/{layer_id}/points.bin")
+def las_points_bin(layer_id: str, max_points: int = 1_000_000):
+    """3D表示用の点群バイナリ（JSON の ~1/10 サイズ・大点数向け）。
+
+    レイアウト（little-endian）:
+      magic "FRSP"(4) | version u8=1 | has_rgb u8 | reserved u16 |
+      n u32 | origin ox,oy,oz f64×3 | zmin,zmax f64×2 |
+      rel_x f32×n | rel_y f32×n | rel_z f32×n | rgb u8×3n（has_rgb 時）
+    座標は origin（点群中心）からの相対値 f32＝ミリ精度を保ったまま 12B/点。
+    """
+    import struct
+
+    meta = store.get_layer(layer_id)
+    if not meta or meta.get("kind") != "las" or not meta.get("source"):
+        raise HTTPException(404, "LAS layer not found")
+    xyz, rgb = _load_las_points_working(meta, max_points=max(1000, min(max_points, 4_000_000)))
+    ox = float(xyz[:, 0].min() + xyz[:, 0].max()) / 2.0
+    oy = float(xyz[:, 1].min() + xyz[:, 1].max()) / 2.0
+    zmin, zmax = float(xyz[:, 2].min()), float(xyz[:, 2].max())
+    oz = (zmin + zmax) / 2.0
+    n = int(xyz.shape[0])
+    head = struct.pack("<4sBBHI5d", b"FRSP", 1, 1 if rgb is not None else 0, 0, n, ox, oy, oz, zmin, zmax)
+    rel = (xyz - np.array([ox, oy, oz])).astype("<f4")
+    parts = [head, rel[:, 0].tobytes(), rel[:, 1].tobytes(), rel[:, 2].tobytes()]
+    if rgb is not None:
+        parts.append(np.ascontiguousarray(rgb, dtype=np.uint8).tobytes())
+    return Response(content=b"".join(parts), media_type="application/octet-stream")
+
+
+@router.get("/{layer_id}/points")
+def las_points(layer_id: str, max_points: int = 200000):
+    """3D表示用に LAS 点群を間引いて返す（XYZ＝作業CRS[m]、RGBがあれば0-255）。"""
+    meta = store.get_layer(layer_id)
+    if not meta or meta.get("kind") != "las" or not meta.get("source"):
+        raise HTTPException(404, "LAS layer not found")
+    xyz, rgb = _load_las_points_working(meta, max_points=max(1000, min(max_points, 600000)))
     x = [round(float(v), 2) for v in xyz[:, 0]]
     y = [round(float(v), 2) for v in xyz[:, 1]]
     z = [round(float(v), 2) for v in xyz[:, 2]]

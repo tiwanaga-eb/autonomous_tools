@@ -7,6 +7,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 import { api } from "@/api/client";
+import type { PointCloud } from "@/api/client";
 import { dispatch } from "@/commandBus";
 import { pickLayer } from "@/layerSelect";
 import { useStore } from "@/store/useStore";
@@ -15,10 +16,6 @@ import type { XY } from "@/types/api";
 interface Grid {
   nx: number; ny: number; x0: number; y0: number; dx: number; dy: number;
   z: (number | null)[][]; zmin: number; zmax: number;
-}
-interface Points {
-  n: number; x: number[]; y: number[]; z: number[];
-  has_rgb: boolean; rgb: number[][] | null; zmin: number; zmax: number;
 }
 
 function elevColor(t: number): [number, number, number] {
@@ -45,7 +42,7 @@ export function ThreeView() {
     edit: THREE.Group; // 作成中ポリゴン＋編集ハンドル
     raycaster: THREE.Raycaster; ndc: THREE.Vector2;
     drag: { kind: "waypoint" | "areavtx"; id: string; index: number; obj: THREE.Object3D } | null;
-    origin: { ox: number; oy: number; oz: number }; grid: Grid | null; pts: Points | null; raf: number;
+    origin: { ox: number; oy: number; oz: number }; grid: Grid | null; pts: PointCloud | null; raf: number;
   } | null>(null);
 
   const layers = useStore((s) => s.layers);
@@ -61,6 +58,7 @@ export function ThreeView() {
   const roadWidthM = useStore((s) => s.roadWidthM);
   const mode3d = useStore((s) => s.view3dMode);
   const pointSize = useStore((s) => s.pointSize);
+  const pointBudget = useStore((s) => s.pointBudget);
   const setStatus = useStore((s) => s.setStatus);
 
   const costLayerId = useStore((s) => s.costLayerId);
@@ -98,7 +96,7 @@ export function ThreeView() {
       renderer, scene, camera, controls, content, terrain, points, edit,
       raycaster: new THREE.Raycaster(), ndc: new THREE.Vector2(),
       drag: null as null | { kind: "waypoint" | "areavtx"; id: string; index: number; obj: THREE.Object3D },
-      origin: { ox: 0, oy: 0, oz: 0 }, grid: null as Grid | null, pts: null as Points | null, raf: 0,
+      origin: { ox: 0, oy: 0, oz: 0 }, grid: null as Grid | null, pts: null as PointCloud | null, raf: 0,
     };
     st.current = s;
     const loop = () => { s.raf = requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera); };
@@ -321,21 +319,32 @@ export function ThreeView() {
     const s = st.current; if (!s) return;
     disposeGroup(s.points);
     const p = s.pts; if (!p || p.n < 1) return;
-    const pos = new Float32Array(p.n * 3), col = new Float32Array(p.n * 3);
-    const span = p.zmax - p.zmin || 1;
-    for (let i = 0; i < p.n; i++) {
-      const [lx, ly, lz] = toLocal(p.x[i], p.y[i], p.z[i]);
-      pos[i * 3] = lx; pos[i * 3 + 1] = ly; pos[i * 3 + 2] = lz;
-      if (p.has_rgb && p.rgb) {
-        col[i * 3] = p.rgb[i][0] / 255; col[i * 3 + 1] = p.rgb[i][1] / 255; col[i * 3 + 2] = p.rgb[i][2] / 255;
-      } else {
-        const [cr, cg, cb] = elevColor((p.z[i] - p.zmin) / span);
-        col[i * 3] = cr; col[i * 3 + 1] = cg; col[i * 3 + 2] = cb;
-      }
+    // バイナリ点群は点群中心(origin)相対の f32。シーン原点との差分だけ足して一括変換
+    // （100万点級でも JS ループ1本＋色は uint8 正規化属性で GPU 直渡し）。
+    const o = s.origin;
+    const dx = p.origin[0] - o.ox;
+    const dy = p.origin[1] - o.oy;
+    const dz = p.origin[2] - o.oz;
+    const n = p.n;
+    const pos = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      pos[i * 3] = p.x[i] + dx;
+      pos[i * 3 + 1] = p.z[i] + dz;
+      pos[i * 3 + 2] = -(p.y[i] + dy);
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-    geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+    if (p.rgb) {
+      geo.setAttribute("color", new THREE.BufferAttribute(p.rgb, 3, true)); // uint8 → 0..1 正規化
+    } else {
+      const col = new Float32Array(n * 3);
+      const span = p.zmax - p.zmin || 1;
+      for (let i = 0; i < n; i++) {
+        const [cr, cg, cb] = elevColor((p.z[i] + p.origin[2] - p.zmin) / span);
+        col[i * 3] = cr; col[i * 3 + 1] = cg; col[i * 3 + 2] = cb;
+      }
+      geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+    }
     s.points.add(new THREE.Points(geo, new THREE.PointsMaterial({ size: pointSize, vertexColors: true, sizeAttenuation: false })));
   }
 
@@ -451,8 +460,17 @@ export function ThreeView() {
     let half = 150;
     if (s.grid) half = Math.max(Math.abs(s.grid.dx * s.grid.nx), Math.abs(s.grid.dy * s.grid.ny)) / 2;
     else if (s.pts && s.pts.n) {
-      const xs = s.pts.x, ys = s.pts.y;
-      half = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) / 2 || 150;
+      // typed array は spread 不可（引数上限）なのでループで bbox を取る
+      const p = s.pts;
+      let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
+      for (let i = 0; i < p.n; i++) {
+        const X = p.x[i], Y = p.y[i];
+        if (X < minx) minx = X;
+        if (X > maxx) maxx = X;
+        if (Y < miny) miny = Y;
+        if (Y > maxy) maxy = Y;
+      }
+      half = Math.max(maxx - minx, maxy - miny) / 2 || 150;
     }
     s.camera.position.set(half * 0.9, half * 1.1, half * 1.3);
     s.controls.target.set(0, 0, 0); s.controls.update();
@@ -466,25 +484,25 @@ export function ThreeView() {
     (async () => {
       const [grid, pts] = await Promise.all([
         costLayer ? api.dsmGrid(costLayer.id, 240, ac.signal).catch(() => null) : Promise.resolve(null),
-        lasLayer ? api.layerPoints(lasLayer.id, 200000, ac.signal).catch(() => null) : Promise.resolve(null),
+        lasLayer ? api.layerPointsBin(lasLayer.id, pointBudget, ac.signal).catch(() => null) : Promise.resolve(null),
       ]);
       if (cancelled || !st.current) return;
       s.grid = grid; s.pts = pts;
       if (grid) {
         s.origin = { ox: grid.x0 + (grid.dx * (grid.nx - 1)) / 2, oy: grid.y0 + (grid.dy * (grid.ny - 1)) / 2, oz: (grid.zmin + grid.zmax) / 2 };
       } else if (pts && pts.n) {
-        const cx = (Math.min(...pts.x) + Math.max(...pts.x)) / 2, cy = (Math.min(...pts.y) + Math.max(...pts.y)) / 2;
-        s.origin = { ox: cx, oy: cy, oz: (pts.zmin + pts.zmax) / 2 };
+        s.origin = { ox: pts.origin[0], oy: pts.origin[1], oz: pts.origin[2] };
       } else {
         const p = route?.trajectory.points ?? [];
         s.origin = p.length ? { ox: p[0].x, oy: p[0].y, oz: 0 } : { ox: 0, oy: 0, oz: 0 };
       }
       buildTerrain(); buildPoints(); rebuildContent(); rebuildEdit(); applyVExag(); applyPointSize(); applyMode(); fitCamera();
       if (mode3d === "points" && !pts) setStatus("3D点群: LASレイヤがありません（地形メッシュに切替可）");
+      else if (pts && pts.n) setStatus(`3D点群: ${pts.n.toLocaleString()} 点を表示（上限 ${pointBudget.toLocaleString()}）`, "info");
     })();
     return () => { cancelled = true; ac.abort(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [costLayer?.id, lasLayer?.id]);
+  }, [costLayer?.id, lasLayer?.id, pointBudget]);
 
   // route/spotting/wp/道幅 変化は **content のみ**再構築（terrain/points は作り直さない＝重い再確保を回避）
   useEffect(() => {

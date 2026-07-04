@@ -37,6 +37,7 @@ export function serializeProject(): Record<string, unknown> {
     allowReverse: s.allowReverse,
     refineElasticBand: s.refineElasticBand,
     showWaypoints: s.showWaypoints,
+    pointBudget: s.pointBudget,
     costOpacity: s.costOpacity,
     costVisible: s.costVisible,
     drivableOpacity: s.drivableOpacity,
@@ -110,6 +111,7 @@ export function applyProject(state: Record<string, unknown>): void {
   s.setAllowReverse(g("allowReverse", false));
   s.setRefineElasticBand(g("refineElasticBand", false));
   s.setShowWaypoints(g("showWaypoints", true));
+  s.setPointBudget(g("pointBudget", 1_000_000));
   s.setCostOpacity(g("costOpacity", 0.6));
   s.setCostVisible(g("costVisible", true));
   s.setDrivableOpacity(g("drivableOpacity", 0.5));

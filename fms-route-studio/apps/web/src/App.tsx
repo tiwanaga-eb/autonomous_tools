@@ -68,6 +68,8 @@ export function App() {
   const setView3dMode = useStore((s) => s.setView3dMode);
   const pointSize = useStore((s) => s.pointSize);
   const setPointSize = useStore((s) => s.setPointSize);
+  const pointBudget = useStore((s) => s.pointBudget);
+  const setPointBudget = useStore((s) => s.setPointBudget);
 
   useEffect(() => {
     api
@@ -185,10 +187,22 @@ export function App() {
                 <input type="range" min={1} max={6} step={0.5} value={vExag} onChange={(e) => setVExag(+e.target.value)} />
               </label>
               {view3dMode === "points" && (
-                <label className="view-vexag" title="点サイズ">
-                  pt{pointSize.toFixed(1)}
-                  <input type="range" min={1} max={6} step={0.5} value={pointSize} onChange={(e) => setPointSize(+e.target.value)} />
-                </label>
+                <>
+                  <label className="view-vexag" title="点サイズ">
+                    pt{pointSize.toFixed(1)}
+                    <input type="range" min={1} max={6} step={0.5} value={pointSize} onChange={(e) => setPointSize(+e.target.value)} />
+                  </label>
+                  <label className="view-vexag" title="表示する点数の上限（多いほど密だが読込・描画が重くなる）">
+                    点数
+                    <select value={pointBudget} onChange={(e) => setPointBudget(+e.target.value)}>
+                      <option value={200_000}>20万</option>
+                      <option value={500_000}>50万</option>
+                      <option value={1_000_000}>100万</option>
+                      <option value={2_000_000}>200万</option>
+                      <option value={4_000_000}>400万</option>
+                    </select>
+                  </label>
+                </>
               )}
             </>
           )}
