@@ -62,3 +62,29 @@ def test_read_las_downsamples_when_huge(tmp_path):
     # 表示用も同様に上限内
     xyz, _rgb, _ = read_las_points(p, max_points=2000)
     assert xyz.shape[0] <= 2000 and xyz.shape[1] == 3
+
+
+def test_resolve_las_epsg_priority():
+    """CRS 解決の優先順位: 明示指定 > ヘッダ > 経緯度ヒューリスティック > fallback。"""
+    import numpy as np
+
+    from planning_core.io import looks_like_lonlat, resolve_las_epsg
+
+    lon = np.array([139.5, 139.6])
+    lat = np.array([35.1, 35.2])
+    metric_x = np.array([30000.0, 30010.0])
+    metric_y = np.array([119000.0, 119010.0])
+
+    # 明示指定が最優先（ヘッダ・座標範囲より強い）
+    assert resolve_las_epsg(6677, lon, lat, override=6675) == (6675, "specified")
+    # ヘッダがあればそれを使う（経緯度らしい座標でも上書きしない）
+    assert resolve_las_epsg(4326, metric_x, metric_y) == (4326, "header")
+    # ヘッダ無し＋全点が経緯度範囲 → WGS84 と推定
+    assert resolve_las_epsg(None, lon, lat) == (4326, "assumed_wgs84")
+    # ヘッダ無し＋メートル座標 → fallback（無指定なら None=作業CRSのまま）
+    assert resolve_las_epsg(None, metric_x, metric_y, fallback=6677) == (6677, "assumed_working")
+    assert resolve_las_epsg(None, metric_x, metric_y) == (None, "assumed_working")
+    # ヒューリスティック単体
+    assert looks_like_lonlat(lon, lat) is True
+    assert looks_like_lonlat(metric_x, metric_y) is False
+    assert looks_like_lonlat(np.array([]), np.array([])) is False

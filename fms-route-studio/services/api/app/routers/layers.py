@@ -49,17 +49,16 @@ def delete_layer(layer_id: str):
 def _load_las_points_working(meta: dict, max_points: int) -> tuple[np.ndarray, np.ndarray | None]:
     """LAS を間引き読みし作業CRSへ再投影して (xyz(N,3), rgb(N,3)uint8|None) を返す。
 
-    ヘッダに CRS が無くても、全点が経緯度らしき範囲（|x|<=180, |y|<=90）なら WGS84(4326)
-    と推定して変換する（WGS84 の LAS はヘッダ CRS 欠落が多い）。
+    CRS 解決は planning_core.io.resolve_las_epsg（ヘッダ > 経緯度ヒューリスティック > 作業CRS）
+    に一元化（costmap 生成と同一規則）。
     """
     from planning_core.geometry import project
-    from planning_core.io import read_las_points
+    from planning_core.io import read_las_points, resolve_las_epsg
 
     xyz, rgb, epsg = read_las_points(meta["source"], max_points=max_points)
     if xyz.shape[0] == 0:
         raise HTTPException(422, "LAS has no points")
-    if not epsg and float(np.abs(xyz[:, 0]).max()) <= 180.0 and float(np.abs(xyz[:, 1]).max()) <= 90.0:
-        epsg = 4326
+    epsg, _src = resolve_las_epsg(epsg, xyz[:, 0], xyz[:, 1])
     if epsg and int(epsg) != get_working_epsg():
         xy = project(xyz[:, :2], int(epsg), get_working_epsg())
         xyz = np.column_stack([xy, xyz[:, 2]])

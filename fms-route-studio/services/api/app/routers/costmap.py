@@ -24,7 +24,7 @@ from rio_tiler.io import Reader
 
 from planning_core.costmap import build_costmap_arrays, cost_to_rgba
 from planning_core.geometry import project
-from planning_core.io import read_las_xyz
+from planning_core.io import read_las_xyz, resolve_las_epsg
 from planning_core.models import CostmapParams
 
 from .. import store
@@ -122,19 +122,13 @@ def generate_costmap(req: CostmapRequest):
         raise HTTPException(422, "LAS has no points")
 
     # LAS の CRS 解決: 明示指定 > ヘッダ > 経緯度ヒューリスティック > 作業ゾーン（そのまま）。
-    # WGS84 の LAS はヘッダに CRS が無いことが多く、従来はメートル扱いで壊れていた。
-    # 全点が |x|<=180 かつ |y|<=90 なら経緯度（WGS84, EPSG:4326）と推定して再投影する。
-    src_epsg = req.src_epsg or header_epsg
+    # 規則は planning_core.io.resolve_las_epsg に一元化（点群3D表示と同一）。
+    src_epsg, las_crs_source = resolve_las_epsg(
+        header_epsg, x, y, override=req.src_epsg, fallback=req.target_epsg
+    )
     crs_note: str | None = None
-    if src_epsg:
-        las_crs_source = "specified" if req.src_epsg else "header"
-    elif float(np.abs(x).max()) <= 180.0 and float(np.abs(y).max()) <= 90.0:
-        src_epsg = 4326
-        las_crs_source = "assumed_wgs84"
+    if las_crs_source == "assumed_wgs84":
         crs_note = "LASヘッダにCRSが無いため経緯度(WGS84)と推定して再投影しました。違う場合は「LASのCRS」を指定して再生成してください。"
-    else:
-        src_epsg = req.target_epsg
-        las_crs_source = "assumed_working"
     if int(src_epsg) != int(req.target_epsg):
         xy = project(np.column_stack([x, y]), int(src_epsg), int(req.target_epsg))
         x, y = xy[:, 0], xy[:, 1]
