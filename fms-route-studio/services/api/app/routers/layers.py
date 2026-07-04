@@ -191,6 +191,16 @@ async def upload_layer(
     }
 
     if kind == "las":
+        # 不正な LAS はここで早期拒否する（従来は登録が通り、後段の costmap 生成で 500 になっていた）。
+        import laspy
+
+        try:
+            with laspy.open(str(src)):
+                pass
+        except Exception as e:  # noqa: BLE001
+            shutil.rmtree(d, ignore_errors=True)
+            raise HTTPException(422, f"LASファイルを読めません（壊れているか形式が不正）: {e}")
+
         # ヘッダの CRS を検出してメタに記録（コストマップ生成の既定 src・FE 表示用）。
         from planning_core.io import las_header_epsg
 

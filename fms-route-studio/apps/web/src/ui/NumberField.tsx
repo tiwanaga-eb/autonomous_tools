@@ -17,6 +17,22 @@ interface Props {
   style?: CSSProperties;
 }
 
+export function clampTo(v: number, min?: number, max?: number): number {
+  return Math.min(max ?? Infinity, Math.max(min ?? -Infinity, v));
+}
+
+/** 確定時（blur/Enter）の解決値。解釈できない入力（"", "-", "1e" 等）は prev へ戻す。 */
+export function resolveCommit(text: string, prev: number, min?: number, max?: number): number {
+  const v = parseFloat(text);
+  return Number.isFinite(v) ? clampTo(v, min, max) : prev;
+}
+
+/** タイプ中にライブ反映してよい値。範囲内の完全な数値のみ（途中入力はクランプせず保持）。 */
+export function liveCommitValue(text: string, min?: number, max?: number): number | null {
+  const v = parseFloat(text);
+  return Number.isFinite(v) && v === clampTo(v, min, max) ? v : null;
+}
+
 export function NumberField({ value, onCommit, step, min, max, title, disabled, style }: Props) {
   const [text, setText] = useState(String(value));
   const [focused, setFocused] = useState(false);
@@ -26,17 +42,10 @@ export function NumberField({ value, onCommit, step, min, max, title, disabled, 
     if (!focused) setText(String(value));
   }, [value, focused]);
 
-  const clamp = (v: number) => Math.min(max ?? Infinity, Math.max(min ?? -Infinity, v));
-
   const commit = () => {
-    const v = parseFloat(text);
-    if (Number.isFinite(v)) {
-      const c = clamp(v);
-      onCommit(c);
-      setText(String(c));
-    } else {
-      setText(String(value)); // 解釈できない入力は元の値へ戻す
-    }
+    const c = resolveCommit(text, value, min, max);
+    if (c !== value) onCommit(c);
+    setText(String(c));
   };
 
   return (
@@ -52,10 +61,10 @@ export function NumberField({ value, onCommit, step, min, max, title, disabled, 
       onChange={(e) => {
         const t = e.target.value;
         setText(t);
-        const v = parseFloat(t);
         // 範囲内の完全な数値はライブ反映（スピナー操作・通常入力が即効く）。
         // 範囲外/途中の入力はクランプせず保持し、確定時に丸める。
-        if (Number.isFinite(v) && v === clamp(v)) onCommit(v);
+        const v = liveCommitValue(t, min, max);
+        if (v !== null) onCommit(v);
       }}
       onFocus={() => setFocused(true)}
       onBlur={() => {

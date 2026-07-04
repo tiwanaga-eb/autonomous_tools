@@ -1044,3 +1044,54 @@ def test_fleet_junction_api():
     j = client.post("/api/fleet/junction", json={"points": pts, "s_frac": 0.5}).json()
     assert abs(j["x"] - 50.0) < 2.0 and abs(j["y"]) < 1e-6
     assert abs(((j["heading_deg"] + 180) % 360) - 180) < 1e-6
+
+
+# ---- 負系（不正入力がクラッシュ(500)ではなく明確なエラーになる） ----
+
+
+def test_upload_corrupt_las_rejected_422():
+    """壊れた LAS はアップロード時点で 422（従来は登録が通り costmap 生成で 500）。"""
+    r = client.post(
+        "/api/layers/las",
+        files={"file": ("broken.las", b"this is not a las file at all", "application/octet-stream")},
+    )
+    assert r.status_code == 422
+    assert "LAS" in r.json()["detail"]
+    # 失敗したアップロードはレイヤ一覧に残らない
+    assert all(l["filename"] != "broken.las" for l in client.get("/api/layers").json()["layers"])
+
+
+def test_plan_unknown_vehicle_404():
+    r = client.post(
+        "/api/plan",
+        json={
+            "waypoints": [
+                {"x": 0.0, "y": 0.0, "role": "start"},
+                {"x": 50.0, "y": 0.0, "role": "goal"},
+            ],
+            "vehicle_id": "UNKNOWN_VEHICLE_XX",
+        },
+    )
+    assert r.status_code == 404
+    assert "unknown vehicle" in r.json()["detail"]
+
+
+def test_spotting_require_switchback_with_zero_max_is_forward_only():
+    """矛盾指定（require_switchback=True ∧ max_switchbacks=0）は切返し不可が優先され前進のみで解く。
+
+    仕様: require_switchback は max_switchbacks>=1 のときだけ効く（spotting docstring）。
+    500 やエラーにならないことを固定化する。
+    """
+    r = client.post(
+        "/api/simulate/spotting",
+        json={
+            "start": {"x": 0.0, "y": 0.0, "heading_deg": 0.0},
+            "target": {"x": 40.0, "y": 5.0, "heading_deg": 0.0},
+            "min_turn_radius_m": 8.0,
+            "max_switchbacks": 0,
+            "require_switchback": True,
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["metrics"]["n_switchbacks"] == 0
