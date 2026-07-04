@@ -148,10 +148,11 @@ export function SpottingPanel() {
       const ss = res.allow_stationary
         ? "据え切り許可"
         : `据え切り回避(端点直線 開始${l0 > 0 ? `${l0}m` : "⚠不可"} / 到着${lN > 0 ? `${lN}m` : "⚠不可"}${cuspWarn})`;
+      const note = res.note ? ` ・ ${res.note}` : "";
       setStatus(
         res.feasible
-          ? `寄り付き: ${m.length_total_m}m / ${m.time_total_s}s / 切返${m.n_switchbacks}回 / 誤差${m.approach_error_m}m ・ ${ss}`
-          : `⚠ 実現困難(${res.status}): 誤差${m.approach_error_m}m ・ ${ss}`,
+          ? `寄り付き: ${m.length_total_m}m / ${m.time_total_s}s / 切返${m.n_switchbacks}回 / 誤差${m.approach_error_m}m ・ ${ss}${note}`
+          : `⚠ 実現困難(${res.status}): 誤差${m.approach_error_m}m ・ ${ss}${note}`,
         res.feasible ? "success" : "warn",
       );
     } catch (e) {

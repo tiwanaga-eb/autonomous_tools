@@ -193,6 +193,7 @@ export interface SpotResult {
   rho_m: number;
   method?: SpottingMethod;
   reason?: string | null;
+  note?: string | null; // 近似・制約の注記（例: スキッドステア車の Ackermann 近似計画）
   exit?: SpotResult | null;
   // 据え切り診断: 解決後の可否と、端点に入れた直線リードイン/アウト長[m]（0=据え切り）
   allow_stationary?: boolean;

@@ -223,6 +223,10 @@ def spotting(req: SpottingRequest):
     )
     out = _result_dict(res, rho, footprint)
     out["method"] = req.method
+    # スキッドステア車（CD110R 等）は専用プリミティブが無く Ackermann 近似で計画される。
+    # 保守的（Ackermann 追従可能ならスキッド車も可）だが、その場旋回は未活用 — UI に明示。
+    if veh is not None and getattr(veh, "kinematic_type", None) == "tracked_skid":
+        out["note"] = "スキッドステア車は Ackermann 近似で計画（保守的・その場旋回は未活用）"
     min_speed_mps = max(0.0, float(req.min_speed_kmh)) / 3.6
     _attach_analysis(out, res, veh, dsm, dsm_t, mask, transform, min_speed_mps)  # 経路と同じ軌跡解析＋安全検証
 

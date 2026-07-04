@@ -90,3 +90,26 @@ def test_analyze_polyline_attaches_z_grade_and_failclosed_safety():
     assert all(p.z is not None for p in traj.points)
     assert analysis.max_grade_pct == pytest.approx(10.0, abs=0.5)
     assert safety.passed is False  # 車両なし・走行可能領域なし → fail-closed
+
+
+def test_plan_route_skid_vehicle_gets_approximation_note():
+    """スキッドステア車（CD110R）は Ackermann 近似で計画される旨を warning に明示する。"""
+    from planning_core.vehicle import load_builtin
+
+    spec = PlanSpec(
+        waypoints=np.array([[0.0, 0.0], [40.0, 10.0], [80.0, 0.0]]),
+        headings_deg=[None, None, None],
+        algorithm="spline", spacing_m=2.0,
+        vehicle=load_builtin("CD110R"),
+    )
+    out = plan_route(spec)
+    assert out.warning is not None and "スキッドステア" in out.warning
+    # 通常車（HD785）には付かない
+    spec2 = PlanSpec(
+        waypoints=np.array([[0.0, 0.0], [40.0, 10.0], [80.0, 0.0]]),
+        headings_deg=[None, None, None],
+        algorithm="spline", r_min=15.0, spacing_m=2.0,
+        vehicle=load_builtin("HD785"),
+    )
+    out2 = plan_route(spec2)
+    assert out2.warning is None or "スキッドステア" not in out2.warning

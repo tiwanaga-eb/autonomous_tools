@@ -474,6 +474,12 @@ def plan_route(spec: PlanSpec) -> PlanOutcome:  # noqa: C901 — アルゴリズ
     )
     if grade_warning:
         warn = (warn + " / " if warn else "") + grade_warning
+    # スキッドステア車は専用プリミティブ（差動旋回・その場旋回）を持たず Ackermann 系の
+    # 経路で計画される。Ackermann 追従可能ならスキッド車も追従可能なので保守側だが、
+    # その場旋回を活かした最短経路にはならない — 近似であることを明示する。
+    if veh is not None and veh.kinematic_type == "tracked_skid":
+        skid_note = "スキッドステア車は Ackermann 近似で計画（保守的・その場旋回は未活用）"
+        warn = (warn + " / " if warn else "") + skid_note
 
     return PlanOutcome(
         trajectory=traj,
