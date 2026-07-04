@@ -30,6 +30,8 @@ export function PilePanel() {
   const setStaggerInv = useStore((s) => s.setPileStaggerInv);
   const spreadT = useStore((s) => s.pileSpreadT);
   const setSpreadT = useStore((s) => s.setPileSpreadT);
+  const spreadDx = useStore((s) => s.pileSpreadDx);
+  const setSpreadDx = useStore((s) => s.setPileSpreadDx);
   const edgeMargin = useStore((s) => s.pileEdgeMarginM);
   const setEdgeMargin = useStore((s) => s.setPileEdgeMarginM);
   const plan = useStore((s) => s.pilePlan);
@@ -51,7 +53,7 @@ export function PilePanel() {
           repose_deg: reposeDeg,
           volume_m3: sizeMode === "volume" ? volumeM3 : null,
           height_m: sizeMode === "height" ? heightM : null,
-          dx_m: placeMode === "spacing" ? dx : null,
+          dx_m: placeMode === "spacing" ? dx : spreadDx > 0 ? spreadDx : null,
           dy_m: placeMode === "spacing" && dy > 0 ? dy : null,
           spread_thickness_m: placeMode === "spread" ? spreadT : null,
           stagger,
@@ -126,10 +128,16 @@ export function PilePanel() {
             </label>
           </>
         ) : (
-          <label title="1パイル(V)を厚tで均すと面積V/tをカバー → 推奨間隔√(V/t)・理論数⌊A·t/V⌋">
-            撒き出し厚 t (m)
-            <input type="number" step="0.1" min="0.1" value={spreadT} onChange={(e) => setSpreadT(Math.max(0.1, +e.target.value))} />
-          </label>
+          <>
+            <label title="1パイル(V)を厚tで均すと面積V/tをカバー → 理論数⌊A·t/V⌋。間隔は 横×縦=V/t を満たすように決まる">
+              撒き出し厚 t (m)
+              <input type="number" step="0.1" min="0.1" value={spreadT} onChange={(e) => setSpreadT(Math.max(0.1, +e.target.value))} />
+            </label>
+            <label title="横間隔を基準に指定すると、縦間隔は (V÷t)÷横 で自動計算されます（横×縦=カバー面積を厳密に維持）。0=正方格子 √(V/t)">
+              横間隔 (m)（基準・0=自動）
+              <input type="number" step="0.5" min="0" value={spreadDx} onChange={(e) => setSpreadDx(Math.max(0, +e.target.value))} />
+            </label>
+          </>
         )}
         <label title="エリアの縁から中心までの最小距離。-1=自動（パイル基部がエリア内に収まる=基部半径）">
           縁マージン (m)（-1=自動）

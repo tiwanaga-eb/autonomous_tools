@@ -111,3 +111,17 @@ def test_plan_piles_edge_margin_zero_allows_boundary_centers():
     out = plan_piles(poly, repose_deg=35.0, height_m=1.5, dx=5.0, edge_margin_m=0.0)
     xs = [c[0] for c in out["centers"]]
     assert min(xs) == pytest.approx(0.0, abs=1e-6)  # 端（縁）から詰める
+
+
+def test_plan_piles_spread_mode_dx_based_dy_derived():
+    """撒き出し×横基準: dx を与えると dy=(V/t)/dx が自動導出され、dx·dy=V/t を厳密に満たす。"""
+    poly = [[0, 0], [60, 0], [60, 30], [0, 30]]
+    out = plan_piles(poly, repose_deg=37.0, volume_m3=24.0, spread_thickness_m=0.5, dx=6.0)
+    cover = 24.0 / 0.5  # 48 m²/パイル
+    assert out["spacing"]["dx_m"] == pytest.approx(6.0)
+    assert out["spacing"]["dy_m"] == pytest.approx(cover / 6.0)  # 8.0
+    assert out["spacing"]["dx_m"] * out["spacing"]["dy_m"] == pytest.approx(cover)
+    assert out["count"] > 0
+    # dy 基準（逆）も対称に働く
+    out2 = plan_piles(poly, repose_deg=37.0, volume_m3=24.0, spread_thickness_m=0.5, dy=4.0)
+    assert out2["spacing"]["dx_m"] == pytest.approx(cover / 4.0)  # 12.0

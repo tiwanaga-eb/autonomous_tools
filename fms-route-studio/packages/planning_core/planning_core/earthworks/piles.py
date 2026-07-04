@@ -192,8 +192,10 @@ def plan_piles(polygon, *, repose_deg: float = 35.0,
     """エリア多角形へのパイル配置計画（間隔指定 or 撒き出し計算）。
 
     - 間隔指定: dx/dy を与える（dy 省略時は dx と同じ）。
-    - 撒き出し計算: spread_thickness_m（撒き出し厚 t）を与えると、推奨間隔 d=√(V/t) と
-      理論数 n=⌊A·t/V⌋ を計算して配置する（dx/dy 指定があればそれを優先）。
+    - 撒き出し計算: spread_thickness_m（撒き出し厚 t）を与えると、1パイルのカバー面積 V/t を
+      満たす格子（dx·dy = V/t）を組む。**横 dx を与えると縦 dy = (V/t)/dx を自動導出**（横基準）。
+      dy だけ与えれば dx を導出。どちらも無ければ正方格子 d=√(V/t)。dx/dy 両方指定は
+      そのまま使う（厚みの厳密性よりユーザー指定を優先）。理論数 n=⌊A·t/V⌋ も返す。
     - edge_margin_m: 縁からのマージン。None はパイル基部半径（基部がエリア内に収まる）。
     """
     poly = np.asarray(polygon, float)
@@ -208,10 +210,15 @@ def plan_piles(polygon, *, repose_deg: float = 35.0,
         cover = spec.volume_m3 / float(spread_thickness_m)   # 1パイルが厚tで均せる面積[m²]
         d_suggest = math.sqrt(cover)
         n_theory = int(area / cover)
-        if dx is None:
-            dx = d_suggest
-        if dy is None:
-            dy = d_suggest
+        if dx and dx > 0 and not (dy and dy > 0):
+            dy = cover / float(dx)      # 横基準: dx·dy = V/t を満たす縦間隔
+        elif dy and dy > 0 and not (dx and dx > 0):
+            dx = cover / float(dy)
+        else:
+            if not (dx and dx > 0):
+                dx = d_suggest
+            if not (dy and dy > 0):
+                dy = d_suggest
     if dx is None or dx <= 0:
         raise ValueError("間隔 dx（または撒き出し厚）を指定してください")
     if dy is None or dy <= 0:
