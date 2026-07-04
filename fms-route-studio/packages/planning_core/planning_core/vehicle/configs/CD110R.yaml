@@ -37,3 +37,4 @@ min_clearance_m: 0.5
 max_lateral_accel: 1.5
 max_accel: 0.5
 max_decel: 1.0
+max_decel_loaded: 0.5          # 積載時の通常減速度（暫定: 空車比~50%）

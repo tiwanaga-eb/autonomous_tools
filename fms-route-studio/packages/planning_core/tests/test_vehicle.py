@@ -28,3 +28,11 @@ def test_hm400_articulated_footprint():
     assert p.footprint_polygon is not None
     assert len(p.footprint_polygon) == 4
     assert all(len(pt) == 2 for pt in p.footprint_polygon)
+
+
+def test_loaded_decel_is_conservative():
+    """積載時減速度は空車値以下（fleet の予約距離 v²/(2·decel) を保守側にする前提）。"""
+    for p in list_builtins():
+        assert p.max_decel is not None
+        assert p.max_decel_loaded is not None, f"{p.id}: max_decel_loaded 未設定"
+        assert p.max_decel_loaded <= p.max_decel, f"{p.id}: 積載時減速度が空車値を超えている"

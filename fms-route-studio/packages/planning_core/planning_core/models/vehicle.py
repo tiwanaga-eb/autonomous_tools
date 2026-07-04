@@ -41,6 +41,7 @@ class VehicleProfile(BaseModel):
     max_lateral_accel: float | None = None  # 運用上の許容横加速度[m/s^2]（荷こぼれしない。コーナー速度 v=sqrt(a/κ)）
     max_accel: float | None = None          # 最大加速度[m/s^2]（アクセル100%相当）
     max_decel: float | None = None          # 通常減速度[m/s^2]（快適減速・停止可能距離に使用）
+    max_decel_loaded: float | None = None   # 積載時の通常減速度[m/s^2]（未設定=max_decel。fleet の予約距離等は保守側=積載値で計算）
     accel_start: float | None = None        # 発進時加速度[m/s^2]（0〜10km/h の緩発進）
     decel_emergency: float | None = None    # 急制動減速度[m/s^2]（タイヤロックしない範囲の最大減速）
     lateral_accel_limit: float | None = None  # 横加速度の構造限界[m/s^2]（転倒/構造限界。運用上限ではない）

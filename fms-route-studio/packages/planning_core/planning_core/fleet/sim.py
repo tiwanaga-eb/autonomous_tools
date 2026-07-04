@@ -24,7 +24,7 @@ class SimVehicle:
     points: np.ndarray          # 経路中心線 (N,2)[m]
     v_max: float = 5.0          # 最大速度[m/s]
     accel: float = 0.5          # 加速[m/s^2]
-    decel: float = 1.0          # 減速[m/s^2]（規定減速度）
+    decel: float = 1.0          # 減速[m/s^2]（規定減速度。予約距離にも使うため保守側=積載時の値を渡すこと）
     half_width: float = 1.7     # 車幅/2[m]
     half_length: float = 3.0    # 車長/2[m]（区間占有を車体長ぶん膨張＝Mutexで車体が重ならない）
     priority: int = 0           # 小さいほど高優先

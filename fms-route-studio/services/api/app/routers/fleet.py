@@ -114,7 +114,9 @@ def _sim_vehicle(r: SimRouteIn) -> SimVehicle:
             v = vehicle_overrides.resolve(r.vehicle_id)
             v_max = float(v.max_speed_fwd or 5.0)
             accel = float(getattr(v, "max_accel", None) or 0.5)
-            decel = float(getattr(v, "max_decel", None) or 1.0)
+            # 減速度は保守側=積載時値を採用する。予約距離 v²/(2·decel) が空車値だと
+            # 積載車で制動距離が伸びた際に Mutex ゾーンが過小になり停止しきれないため。
+            decel = float(getattr(v, "max_decel_loaded", None) or getattr(v, "max_decel", None) or 1.0)
             hl = float(getattr(v, "overall_length", None) or 6.0) / 2.0
         except FileNotFoundError:
             pass
