@@ -54,6 +54,7 @@ export function ThreeView() {
   const spotResult = useStore((s) => s.spotResult);
   const spotStart = useStore((s) => s.spotStart);
   const spotTarget = useStore((s) => s.spotTarget);
+  const pilePlan = useStore((s) => s.pilePlan);
   const vExag = useStore((s) => s.vExag);
   const roadWidthM = useStore((s) => s.roadWidthM);
   const mode3d = useStore((s) => s.view3dMode);
@@ -423,6 +424,27 @@ export function ThreeView() {
     const s = st.current; if (!s) return;
     disposeGroup(s.content);
     areas.forEach((a) => s.content.add(areaGroup(a.points)));
+
+    // 排土（パイル）計画: 実寸の円錐（安息角の錐体）を地形に沿わせて配置。
+    // 全パイル同一寸法なので InstancedMesh 1つで描画（数百個でも軽量）。
+    if (pilePlan && pilePlan.centers.length) {
+      const r = pilePlan.pile.radius_m;
+      const h = pilePlan.pile.height_m;
+      if (r > 0 && h > 0) {
+        const geo = new THREE.ConeGeometry(r, h, 28);
+        const mat = new THREE.MeshStandardMaterial({ color: 0xb45309, transparent: true, opacity: 0.92, roughness: 0.95 });
+        const inst = new THREE.InstancedMesh(geo, mat, pilePlan.centers.length);
+        const m4 = new THREE.Matrix4();
+        pilePlan.centers.forEach(([px, py], i) => {
+          // ConeGeometry は高さ中央が原点（頂点+Y）→ 接地させるため 地面標高 + h/2 に置く
+          const [lx, ly, lz] = toLocal(px, py, sampleElev(px, py) + h / 2);
+          m4.makeTranslation(lx, ly, lz);
+          inst.setMatrixAt(i, m4);
+        });
+        inst.instanceMatrix.needsUpdate = true;
+        s.content.add(inst);
+      }
+    }
     if (route && route.trajectory.points.length > 1) {
       const center = route.trajectory.points.map((p) => ({ x: p.x, y: p.y, z: p.z }));
       if (roadWidthM > 0) {
@@ -509,7 +531,7 @@ export function ThreeView() {
     if (!st.current) return;
     rebuildContent();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [route, areas, waypoints, spotResult, spotStart, spotTarget, roadWidthM]);
+  }, [route, areas, waypoints, spotResult, spotStart, spotTarget, roadWidthM, pilePlan]);
 
   // 作成中ポリゴン・編集ハンドルは edit グループのみ再構築
   useEffect(() => {
