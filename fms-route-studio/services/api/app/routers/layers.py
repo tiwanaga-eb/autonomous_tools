@@ -10,7 +10,7 @@ import numpy as np
 import rasterio
 from affine import Affine
 from fastapi import APIRouter, File, HTTPException, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
 from rasterio.io import MemoryFile
@@ -87,12 +87,31 @@ def las_points_bin(layer_id: str, max_points: int = 1_000_000):
     zmin, zmax = float(xyz[:, 2].min()), float(xyz[:, 2].max())
     oz = (zmin + zmax) / 2.0
     n = int(xyz.shape[0])
-    head = struct.pack("<4sBBHI5d", b"FRSP", 1, 1 if rgb is not None else 0, 0, n, ox, oy, oz, zmin, zmax)
+    has_rgb = rgb is not None
+    head = struct.pack("<4sBBHI5d", b"FRSP", 1, 1 if has_rgb else 0, 0, n, ox, oy, oz, zmin, zmax)
     rel = (xyz - np.array([ox, oy, oz])).astype("<f4")
-    parts = [head, rel[:, 0].tobytes(), rel[:, 1].tobytes(), rel[:, 2].tobytes()]
-    if rgb is not None:
-        parts.append(np.ascontiguousarray(rgb, dtype=np.uint8).tobytes())
-    return Response(content=b"".join(parts), media_type="application/octet-stream")
+    rgb8 = np.ascontiguousarray(rgb, dtype=np.uint8) if has_rgb else None
+
+    # 16M点で本体 ~240MB。b"".join だと rel と結合バッファの二重持ちでピーク ~2倍になる
+    # ため、列ごとに ~8MB のチャンクへ切ってストリーム送出する（Content-Length は既知）。
+    chunk = 2_000_000  # f32 で 8MB/チャンク
+
+    def _iter_body():
+        yield head
+        for col in range(3):
+            a = rel[:, col]
+            for i in range(0, n, chunk):
+                yield a[i:i + chunk].tobytes()
+        if rgb8 is not None:
+            for i in range(0, n, chunk):
+                yield rgb8[i:i + chunk].tobytes()
+
+    total = len(head) + 12 * n + (3 * n if has_rgb else 0)
+    return StreamingResponse(
+        _iter_body(),
+        media_type="application/octet-stream",
+        headers={"Content-Length": str(total)},
+    )
 
 
 @router.get("/{layer_id}/points")
