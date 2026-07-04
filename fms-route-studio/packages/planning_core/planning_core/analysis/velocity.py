@@ -57,6 +57,8 @@ def velocity_profile(s, kappa, gears, vehicle, grades=None, min_speed_mps: float
         # 操舵レート制限は「実応答長(~1.5m)にわたる曲率変化率」で律速すべき。Dubins/RSのC-S接合の
         # 段差は細かいサンプリングだと巨大スパイク化し、数点だけ速度が急落する（離散化由来）。
         # dκ/ds を**弧長1.5m窓**で平滑化（非一様サンプリングに頑健）し、過減速を防ぐ（持続的な高dκ/dsは保持）。
+        # 注: 数値微分の κ はノイズで過制約になり得るため、可能な経路では解析曲率
+        # （curvature_source="analytic"、区分一定κ）を上流で優先している（DESIGN §2.7）。
         span = float(s_safe[-1] - s_safe[0])
         if span > 2.0:
             grid_ds = 0.1

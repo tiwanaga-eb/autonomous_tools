@@ -47,6 +47,8 @@ class VehicleProfile(BaseModel):
     lateral_accel_limit: float | None = None  # 横加速度の構造限界[m/s^2]（転倒/構造限界。運用上限ではない）
     # 速度依存の最大操舵速度 [(速度km/h, 最大操舵速度rad/s), ...]（高速ほど操舵を制限＝ジャーク抑制）
     steer_rate_profile: list[tuple[float, float]] | None = None
+    # 下り勾配上限は velocity_profile に grades（勾配配列）を渡した場合のみ有効。
+    # DSM 未読込（勾配不明）の計画では下りでも上限がかからない点に注意（DESIGN §2.7）。
     max_speed_downhill_empty: float | None = None   # 下り勾配での最大速度(空車)[m/s]
     max_speed_downhill_loaded: float | None = None  # 下り勾配での最大速度(積荷)[m/s]
 

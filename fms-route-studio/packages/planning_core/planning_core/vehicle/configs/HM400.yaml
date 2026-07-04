@@ -1,6 +1,8 @@
 # Komatsu HM400 — アーティキュレート(中折れ)ダンプ（約40t級）
 # 実値ベース（PathGenerator/vehicle_configs/HM400-5.yaml 由来）。
 # v1 は自転車近似で運用（wheel_base/min_turning_radius は近似値）。
+#   注意: 剛体近似のため屈折による後部オフトラッキング（内輪差/外輪はみ出し）を持たない。
+#   旋回包絡の誤差 ~5-15% 見込み。狭所判定は矩形フットプリントの保守性に依存（DESIGN §2.7）。
 # v2 で中折れ運動学を厳密化（front_length/rear_length/max_articulation_angle, 残課題3）。
 id: HM400
 name: Komatsu HM400-5

@@ -162,6 +162,25 @@ LAS/LAZ ──[costmap]──► cost(float32)+DSM+RGB COG
 - 運動学種別: **rigid_bicycle**（HD785/HD605, Ackermann, wheel_base/max_steer_angle, κ=tan(δ)/L）/ **articulated**（HM400, front/rear_length, max_articulation_angle）/ **tracked_skid**（CD110R, 据切り可, R_min 非適用）。
 - `footprint.py`: `vehicle_footprint`（ポリゴン抽出/矩形算出）, `footprint_sample_points`, `path_min_clearance`, `outside_count`。hybrid A* 衝突・逸脱検出に使用。
 
+#### 運動学モデルの既知の近似（v1 の制約）
+
+- **HM400（アーティキュレート）は剛体バイシクル近似で計画する。** 全プランナ/軌道生成
+  （bicycle_step, δ=atan(L·κ), 単一ホイールベース L）は屈折角による後部ユニットの
+  オフトラッキング（内輪差/外輪はみ出し）を持たない。旋回包絡の誤差は ~5–15% 見込み。
+  実運用では矩形フットプリント（全長×全幅）が保守側に働くが、狭所 K-turn の成立判定は
+  この保守性に依存する。**v2 計画: タンデムバイシクル（前後軸＋屈折拘束）または
+  スイープパス包絡ポリゴンによる厳密判定。**
+- **CD110R（スキッドステア）は専用プリミティブ（差動旋回・その場旋回）未実装。**
+  Ackermann 系経路で計画される（Ackermann 追従可能ならスキッド車も追従可能＝保守的だが、
+  その場旋回を活かした最短経路にはならない）。plan_route の warning / spotting の note に
+  近似である旨を自動付記する。
+- **下り坂速度上限（max_speed_downhill_*）は勾配配列（grade_pct）供給時のみ有効。**
+  DSM 未読込で計画すると下り勾配でも上限がかからない（velocity_profile は勾配を知り得ない）。
+  勾配のあるサイトでは DSM（コストマップ生成）を先に済ませてから経路生成すること。
+- **steer-rate 制約は解析曲率ソースを優先。** 数値微分由来の dκ/ds はサンプリングノイズで
+  過制約（実力より遅い速度プロファイル）になり得る。Dubins/RS など区分一定曲率の経路では
+  `curvature_source="analytic"` が使われ、数値経路では 1.5m 窓平滑＋二分法で緩和している。
+
 ### 2.8 `geometry` / `io` / `models`
 
 - `geometry/projection.py`: pyproj ラッパ（`project`, `to_lonlat`, `from_lonlat`）。
@@ -359,7 +378,12 @@ src/
 ## 7. 座標系・ラスタ処理（FRS-SysRS-I-002, P-001/002）
 
 - **作業 CRS**: 既定 EPSG:6677（JGD2011 IX 系）。`FRS_DEFAULT_EPSG` で起動既定、`PUT /api/crs` で実行時変更。JGD2011 平面ゾーン 6669–6687 をサポート。
-- **アップロード**: ラスタ `.crs` を検出、無ければ `assign_epsg` 付与。作業 CRS と異なれば WarpedVRT（bilinear）で再投影。
+  - **単一ユーザー前提**: 作業 CRS はプロセスグローバル（`_working_epsg`）で、全リクエストが共有する。
+    本ツールはローカル1人運用を想定した設計であり、複数ユーザーが同時に異なるゾーンで作業する
+    構成には対応しない（マルチユーザー化する場合は contextvars / リクエストスコープ化が必要）。
+- **LAS の CRS 解決**: `planning_core.io.resolve_las_epsg` に一元化（アップロード/コストマップ/3D点群で共通）。
+  優先順位: 明示指定 > ヘッダ > 経緯度ヒューリスティック（全点 |x|≤180 ∧ |y|≤90 → WGS84 と推定）> fallback。
+- **アップロード**: ラスタ `.crs` を検出、無ければ `assign_epsg` 付与。作業 CRS と異なれば WarpedVRT（bilinear）で再投影。LAS はヘッダを開けない場合 422 で早期拒否。
 - **間引き**: 幅/高さ > MAX_RASTER_DIM(8192) で整数倍ダウンサンプル（mask=nearest, cost/dsm=average）。
 - **COG**: 常にタイル化（deflate, 512×512）出力。`crs_source`（detected/assigned/computed）・`downsampled_from`・`reprojected_from` をメタに記録。
 - **ラスタ規約**: north-up affine（transform.e<0）。world↔pixel は rasterio Affine。セル中心 = i+0.5。
