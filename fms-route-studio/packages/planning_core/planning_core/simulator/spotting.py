@@ -796,7 +796,18 @@ def plan_spotting(
                 for dh in dhs:
                     _add_pose(tx + d * math.cos(tyaw) + lat * tpx,
                               ty + d * math.sin(tyaw) + lat * tpy, tyaw + dh)
-        for d in (max(1.2 * rho, 5.0), max(2.0 * rho, 8.0), max(3.0 * rho, 12.0), max(4.0 * rho, 16.0)):
+        # (1b) 遠方・横に離れた**粗いシェル**: 密格子（横±1.5ρ・距離5ρまで）の外側、
+        #     横±2〜3ρ × 距離最大7ρ を方位24°刻みで覆う。近場が塞がったエリアや
+        #     「少し離れた広場で切り返して戻る」型の解を候補に乗せる（fp_ok 事前間引きで
+        #     エリア外は安価に落ちるため、広げても実評価数は増えにくい）。
+        dhs_coarse = tuple(math.radians(a) for a in range(-144, 145, 24))
+        for d in np.linspace(max(0.8 * rho, 3.0), max(7.0 * rho, 24.0), 6):
+            for lat in (2.0 * rho, -2.0 * rho, 2.5 * rho, -2.5 * rho, 3.0 * rho, -3.0 * rho):
+                for dh in dhs_coarse:
+                    _add_pose(tx + d * math.cos(tyaw) + lat * tpx,
+                              ty + d * math.sin(tyaw) + lat * tpy, tyaw + dh)
+        for d in (max(1.2 * rho, 5.0), max(2.0 * rho, 8.0), max(3.0 * rho, 12.0), max(4.0 * rho, 16.0),
+                  max(5.5 * rho, 20.0)):
             for bearing in (math.radians(a) for a in range(-160, 161, 20) if a != 0):
                 bdir = tyaw + bearing
                 for hfac in (0.3, 0.6, 1.0):

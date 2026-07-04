@@ -476,3 +476,21 @@ def test_spotting_stationary_deny_differs_and_has_no_loops():
 
     assert max_drift(range(len(pts)), deny.endpoint_margin_start_m) <= 2.0
     assert max_drift(range(len(pts) - 1, -1, -1), deny.endpoint_margin_goal_m) <= 2.0
+
+
+def test_spotting_stage_candidates_reach_far_lateral_zone():
+    """横・遠方に離れた切り返しゾーンにも S 候補が置かれる（遠方粗シェルの検証）。
+
+    ゾーン中心は目標前方 6ρ × 横 2.5ρ ＝ 旧候補域（密格子 横±1.5ρ／リング距離4ρ）の外側。
+    旧実装ではゾーン内に cusp を持つ候補が生成されず NO_PATH になっていた。
+    """
+    rho = 6.0
+    start = (0.0, 0.0, 0.0)
+    target = (10.0, 0.0, 0.0)
+    cx, cy = 10.0 + 6.0 * rho, 2.5 * rho  # (46, 15)
+    zone = [(cx - 4.0, cy - 4.0), (cx + 5.0, cy - 4.0), (cx + 5.0, cy + 5.0), (cx - 4.0, cy + 5.0)]
+    res = plan_spotting(start, target, rho=rho, max_switchbacks=1, require_switchback=True,
+                        switchback_zone=zone)
+    assert res.n_switchbacks == 1, f"far-lateral zone should be reachable (status={res.status})"
+    for sx, sy in res.switch_points:
+        assert cx - 4.0 <= sx <= cx + 5.0 and cy - 4.0 <= sy <= cy + 5.0
