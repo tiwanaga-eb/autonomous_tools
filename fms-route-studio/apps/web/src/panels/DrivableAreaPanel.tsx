@@ -1,4 +1,3 @@
-import type { ChangeEvent } from "react";
 import { useState } from "react";
 
 import { api } from "@/api/client";
@@ -6,6 +5,7 @@ import type { DrivableParams } from "@/api/client";
 import { dispatch } from "@/commandBus";
 import { pickLayer } from "@/layerSelect";
 import { useStore } from "@/store/useStore";
+import { NumberField } from "@/ui/NumberField";
 
 // 設計書 §12: コストマップ → 走行可能領域。人が Include/Exclude で非破壊微修正。
 export function DrivableAreaPanel() {
@@ -38,10 +38,7 @@ export function DrivableAreaPanel() {
   const drivable = layers.find((l) => l.id === drivableId);
   const stats = drivable?.stats;
 
-  const set =
-    (k: keyof DrivableParams) =>
-    (e: ChangeEvent<HTMLInputElement>) =>
-      setP((prev) => ({ ...prev, [k]: +e.target.value }));
+  const set = (k: keyof DrivableParams) => (v: number) => setP((prev) => ({ ...prev, [k]: v }));
 
   async function build() {
     if (!costLayer) {
@@ -101,11 +98,11 @@ export function DrivableAreaPanel() {
 
   async function edit(op: "include" | "exclude") {
     if (!drivableId) {
-      setStatus("generate drivable first");
+      setStatus("先に走行可能領域を生成してください", "warn");
       return;
     }
     if (activePolygon.length < 3) {
-      setStatus("draw a polygon (Polygon mode) first");
+      setStatus("先にポリゴンを描いてください（ポリゴンモード）", "warn");
       return;
     }
     setBusy(true);
@@ -126,7 +123,7 @@ export function DrivableAreaPanel() {
   return (
     <section className="card">
       <h3>走行可能領域</h3>
-      {!costLayer && <p className="hint">build a costmap first</p>}
+      {!costLayer && <p className="hint">先にコストマップを生成してください</p>}
       <label>
         生成方法
         <select
@@ -139,33 +136,33 @@ export function DrivableAreaPanel() {
         </select>
       </label>
       <div className="grid2">
-        <label>
-          threshold{p.method !== "threshold" ? "（otsu/適応では無視）" : ""}
-          <input type="number" step="10" value={p.threshold} onChange={set("threshold")} disabled={p.method !== "threshold"} />
+        <label title="コスト値がこの値以下のセルを走行可とみなす（threshold 法のみ）">
+          しきい値{p.method !== "threshold" ? "（otsu/適応では無視）" : ""}
+          <NumberField value={p.threshold} onCommit={set("threshold")} step={10} min={0} max={255} disabled={p.method !== "threshold"} />
         </label>
-        <label>
-          clearance (m)
-          <input type="number" step="0.5" value={p.clearance_m} onChange={set("clearance_m")} />
+        <label title="境界から車体半幅ぶん内側へ縮める安全マージン">
+          離隔 (m)
+          <NumberField value={p.clearance_m} onCommit={set("clearance_m")} step={0.5} min={0} />
         </label>
-        <label>
-          close (m)
-          <input type="number" step="0.5" value={p.close_m} onChange={set("close_m")} />
+        <label title="モルフォロジー closing。小さな切れ目・溝を接続する">
+          隙間接続 close (m)
+          <NumberField value={p.close_m} onCommit={set("close_m")} step={0.5} min={0} />
         </label>
-        <label>
-          open (m)
-          <input type="number" step="0.5" value={p.open_m} onChange={set("open_m")} />
+        <label title="モルフォロジー opening。細いヒゲ・ノイズを除去する">
+          ノイズ除去 open (m)
+          <NumberField value={p.open_m} onCommit={set("open_m")} step={0.5} min={0} />
         </label>
-        <label>
-          min area (m²)
-          <input type="number" step="10" value={p.min_area_m2} onChange={set("min_area_m2")} />
+        <label title="この面積未満の孤立領域（島）を除去">
+          最小面積 (m²)
+          <NumberField value={p.min_area_m2} onCommit={set("min_area_m2")} step={10} min={0} />
         </label>
-        <label>
-          smooth 平滑 (m)
-          <input type="number" step="0.5" min="0" value={p.smooth_m} onChange={set("smooth_m")} />
+        <label title="輪郭の平滑化半径">
+          輪郭平滑 (m)
+          <NumberField value={p.smooth_m} onCommit={set("smooth_m")} step={0.5} min={0} />
         </label>
-        <label>
+        <label title="この面積以下の穴（走行不可の孤立点）を埋める">
           穴埋め ≤ (m²)
-          <input type="number" step="10" min="0" value={p.max_hole_m2} onChange={set("max_hole_m2")} />
+          <NumberField value={p.max_hole_m2} onCommit={set("max_hole_m2")} step={10} min={0} />
         </label>
       </div>
       <label className="slider" style={{ flexDirection: "row", gap: 6, alignItems: "center", marginTop: 6 }}>
@@ -174,11 +171,11 @@ export function DrivableAreaPanel() {
       </label>
       <div className="row" style={{ marginTop: 6 }}>
         <button className="primary" onClick={build} disabled={busy || !costLayer}>
-          {busy ? "生成中…" : drivableId ? "Regenerate" : "Generate"}
+          {busy ? "生成中…" : drivableId ? "再生成" : "生成"}
         </button>
         {drivableId && (
-          <button onClick={() => setDrivableId(null)} disabled={busy}>
-            New
+          <button onClick={() => setDrivableId(null)} disabled={busy} title="既存を残したまま別の走行可能領域を新規生成">
+            新規
           </button>
         )}
       </div>
@@ -256,15 +253,15 @@ export function DrivableAreaPanel() {
       {stats && (
         <ul className="metrics" style={{ marginTop: 6 }}>
           <li>
-            <span>area</span>
+            <span>面積</span>
             <b>{stats.area_m2} m²</b>
           </li>
           <li>
-            <span>islands / holes</span>
+            <span>島 / 穴</span>
             <b>{stats.island_count} / {stats.hole_count ?? 0}</b>
           </li>
           <li>
-            <span>largest</span>
+            <span>最大領域</span>
             <b>{stats.largest_island_m2} m²</b>
           </li>
           <li>

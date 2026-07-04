@@ -354,11 +354,12 @@ export function SpottingPanel() {
           {spotExitGoal && (
             <label style={{ marginTop: 4 }}>
               退出Goal 方位 (°)
-              <input
-                type="number"
-                step="5"
+              <NumberField
                 value={Math.round(spotExitGoal.heading_deg)}
-                onChange={(e) => setSpotExitGoal({ ...spotExitGoal, heading_deg: +e.target.value })}
+                step={5}
+                min={-360}
+                max={360}
+                onCommit={(v) => setSpotExitGoal({ ...spotExitGoal, heading_deg: v })}
               />
             </label>
           )}

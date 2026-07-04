@@ -45,7 +45,7 @@ export function IOPanel() {
     setBusy(true);
     try {
       await exportProjectJson();
-      setStatus("exported JSON");
+      setStatus("プロジェクトJSONをエクスポートしました", "success");
     } catch (e) {
       setStatus(`export failed: ${String(e)}`);
     } finally {
@@ -56,7 +56,7 @@ export function IOPanel() {
   async function load() {
     const f = fileRef.current?.files?.[0];
     if (!f) {
-      setStatus("choose a JSON file first");
+      setStatus("先にJSONファイルを選択してください", "warn");
       return;
     }
     setBusy(true);

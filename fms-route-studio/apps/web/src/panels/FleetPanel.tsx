@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { api } from "@/api/client";
 import { useStore } from "@/store/useStore";
+import { NumberField } from "@/ui/NumberField";
 
 // 複数台制御 Phase B: 保存経路ライブラリ(savedRoutes)を「経路集合」として扱い、
 // 車幅コリドーの重なり（競合区間/交差）を判定・可視化する。
@@ -147,7 +148,7 @@ export function FleetPanel() {
       <div className="field-row" style={{ marginTop: 6 }}>
         <label title="車車間の追加余裕[m]。各経路の半幅(車幅/2)に上乗せして重なり判定を厳しめにする">
           車間マージン (m)
-          <input type="number" step="0.1" min="0" value={clearance} onChange={(e) => setClearance(Math.max(0, +e.target.value))} />
+          <NumberField value={clearance} onCommit={setClearance} step={0.1} min={0} />
         </label>
       </div>
 
@@ -179,8 +180,8 @@ export function FleetPanel() {
                       </label>
                       <label className="hint" style={{ display: "flex", flexDirection: "column" }}>
                         退避量m
-                        <input type="number" step="1" min="1" value={bay.offset_m} style={{ width: 56 }}
-                               onChange={(e) => setFleetBay(r.id, { ...bay, offset_m: Math.max(1, +e.target.value) })} />
+                        <NumberField value={bay.offset_m} style={{ width: 56 }} step={1} min={1}
+                                     onCommit={(v) => setFleetBay(r.id, { ...bay, offset_m: v })} />
                       </label>
                       <button className="hint" style={{ alignSelf: "flex-end" }}
                               onClick={() => setFleetBay(r.id, { ...bay, side: (bay.side === 1 ? -1 : 1) })}>
@@ -242,8 +243,8 @@ export function FleetPanel() {
         {dispatch === "sequential" && (
           <label title="各車が経路を何周するか（Goal到達で次の車、全車終わると最初へ戻る）">
             周回数
-            <input type="number" step="1" min="1" max="50" value={loops} style={{ width: 56 }}
-                   onChange={(e) => setLoops(Math.max(1, Math.min(50, Math.round(+e.target.value))))} />
+            <NumberField value={loops} style={{ width: 56 }} step={1} min={1} max={50}
+                         onCommit={(v) => setLoops(Math.round(v))} />
           </label>
         )}
       </div>
@@ -252,7 +253,7 @@ export function FleetPanel() {
           <div className="field-row">
             <label title="占有区間の手前で止まる際の停止マージン[m]（規定減速度に上乗せの安全余裕）">
               停止マージン (m)
-              <input type="number" step="0.5" min="0" value={gap} onChange={(e) => setGap(Math.max(0, +e.target.value))} />
+              <NumberField value={gap} onCommit={setGap} step={0.5} min={0} />
             </label>
           </div>
           <label className="slider" style={{ flexDirection: "row", gap: 6, alignItems: "center" }}
