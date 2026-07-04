@@ -118,3 +118,113 @@
 - planning_core: `pytest packages/planning_core/tests`（安全・曲率の新規テスト含め全通過）
 - api: `pytest services/api/tests`（全通過）
 - web: `npx tsc --noEmit` クリーン、`npx vitest run`（commandBus の Undo 隔離/上限テスト含め全通過）
+
+---
+
+## 5. 第3回 大規模レビュー（2026-07-04）
+
+対象: UX / 車両運動特性 / UI / コード / アーキテクチャ / テスト。
+4視点（車両運動・BEアーキ・FE/UX・テスト）の独立レビューを統合し、疑わしい指摘はコードで裏取りした上で記載。
+**本節は指摘のみ（未実装）。実施順は 5.6 の提案参照。**
+
+### 5.0 規模・実行時間スナップショット
+
+| 領域 | 行数 | テスト数 | スイート実行時間の支配項 |
+|---|---|---|---|
+| planning_core | 7,013 | 182 | switchback_needs_reverse 8.2s / best_effort_minimizes_overhang 7.5s / rrt_star決定性 4.5s |
+| services/api | 2,796 | 82 | spotting_containment_polygon 4.5s / containment_with_cost 2.0s |
+| apps/web | 7,770 | 37 (vitest) | 全体 ~0.6s |
+
+巨大ファイル: spotting.py 1114 / MapView.tsx 896 / agent.py 773 / ThreeView.tsx 567 / orchestrator.py 488。
+
+### 5.1 車両運動特性（K系）
+
+- **K1 [High/設計明文化]** HM400 はアーティキュレート式だが、全プランナ/軌道生成が剛体バイシクル近似
+  （`bicycle_step`、δ=atan(L·κ) 単一ホイールベース）。オフトラッキング（後部ユニットの内輪差/外輪はみ出し）
+  を持たないため、狭所K-turnの成立判定は矩形フットプリントの保守性に依存しており「証明」ではない
+  （旋回包絡の誤差 ~5–15% 見込み）。→ v1 は「バイシクル近似」と HM400.yaml / DESIGN.md に明記し、
+  v2 でタンデムバイシクル or スイープパス包絡ポリゴンを計画。
+- **K2 [Med/安全・診断]** 据え切り禁止時、端点リードは `endpoint_margin_start/goal_m` で診断可能だが、
+  **内部 cusp のマージンは `_adapt_margin` が狭所で 0 に縮退しても記録・警告されない**
+  （spotting.py:154 で黙って挿入スキップ）。禁止フラグの約束が内部 cusp で静かに破れる。
+  → 各 cusp の実効マージン（最小値）を結果に記録し、禁止時に 0 があれば UI 警告。
+- **K3 [Med/安全]** fleet sim の予約距離 `v_max²/(2·decel)+gap`（sim.py:161）は単一 decel。
+  積載時の実減速度は空車の半分以下になり得るため、mutex ゾーンが過小 → 進入後停止しきれない恐れ。
+  → プロファイルに `max_decel_loaded` を追加するか、fleet sim は保守側（積載時）値を使用。
+- **K4 [Med/ガード]** CD110R（スキッドステア、`can_turn_in_place: true`・暫定スペック）に対応する
+  プランナプリミティブが無く、bicycle_step で計画される。safety.py は R_min/steer_rate を除外済みだが
+  プランナ側は無防備。→ skid 車のプランナ投入時に明示エラー or 「将来対応」をドキュメント化。
+- **K5 [Low/文書]** 下り坂速度上限（max_speed_downhill_*）は grades 供給時のみ有効。DSM 無しでは
+  無制限になることを VehicleProfile に明記。
+- **K6 [Low]** steer-rate 制約は bisection 化済みで正しいが、数値微分由来の dκ/ds はサンプリング
+  ノイズで過制約になり得る。analytic curvature source（Dubins/RS 区分一定 κ）を優先する方針を明文化。
+- 妥当性確認済み（指摘なし）: 横G上限 v=√(a_lat/κ)、δ=atan(L·κ)、cusp で v=0 強制、
+  ギア別上限、停止距離式、cusp での片側差分ヘディング。
+
+### 5.2 アーキテクチャ / バックエンド（B系）
+
+- **B1 [High]** WGS84 ヒューリスティック（全点 |x|≤180 ∧ |y|≤90 → 4326 とみなす）が
+  layers.py と costmap.py に重複実装。→ planning_core（io/las or crs）へ抽出し一元化。
+- **B2 [Med]** `_working_epsg` がモジュールグローバル（プロセス全体で共有）。単一ユーザー・ローカル
+  前提を README/DESIGN に明文化（済みなら参照）、将来マルチユーザー化するなら contextvars 化。
+- **B3 [Med]** spotting.py 1114行。据え切り deny の候補再ランク＋直線化ループ（~90行, ev() 14回）、
+  endpoint margin 群は `stationary_avoidance.py` 等へ抽出可能。テスト24本が資産としてあるので分割は安全。
+- **B4 [Med]** `_insert_endpoint_margin` は端点あたり最大 ~21 回の Dubins 接続を試す。
+  狭所で deny 時のみ実行されるが、ランキング上位 14 候補 × 両端で最悪 ~600 接続。
+  プロファイル取ってから必要なら sQ ラダーの早期打ち切りを検討。
+- **B5 [Med]** /points.bin は 16M 点で ~230MB を一括バイト列構築（メモリピーク）。
+  → チャンク書き出し（StreamingResponse）に変更可能。
+- **B6 [Low]** min_area_rect は凸包後 O(n²)（実質問題なし）、place_grid の辺距離計算が pure-Python
+  O(n·m)（グリッド数千点で顕在化しうる）→ numpy 化。
+- **B7 [Low]** agent.py に broad except が複数。復旧経路として意図的だが、ログ付与を推奨。
+- **B8 [Low]** CRS 検出が upload 時（ヘッダ→meta 保存）と costmap 時（req.src_epsg→ヘッダ→度数
+  ヒューリスティック）で非対称。B1 と同時に判定順序を共通関数へ。
+
+### 5.3 FE / UX / UI（U系）
+
+- **U1 [High/UX一貫性]** NumberField 未採用パネルが残存: DrivableAreaPanel に raw `type="number"` ×7
+  （＋ラベル英語混在）、FleetPanel ×4、SpottingPanel ×1、VehiclePanel ×1（共通レンダラのため
+  1箇所直せば全フィールドに効く）。パイル/ルート系で解決済みの「入力中クランプ・NaN」問題が
+  これらのパネルには残っている。→ NumberField へ統一＋ラベル日本語化。
+- **U2 [Med]** 大規模点群（800万〜1600万点）の /points.bin ロード〜GPU 転送中に busy 表示がない
+  （数秒間無反応に見える）。→ 既存 busy オーバーレイに載せる＋点数セレクタに負荷ヒント。
+- **U3 [Low]** Sidebar 進捗ドットが data/map/route のみ（Sidebar.tsx:48）。piles: !!pilePlan、
+  spotting/fleet も追加すると工程の見通しが揃う。
+- **U4 [Low]** キャプチャの empty-state（レイヤ無し3D等）ガード、AreaPanel/IOPanel の英語ラベル残り、
+  projectState の `as never` キャスト（FE⑤ OpenAPI 型生成で根治）。
+- **U5 [Low]** エリアを編集しても既存 pilePlan が残置され不整合（再計算までstale）。
+  → エリア変更時に該当 plan をクリア or 「要再計算」バッジ。
+- 誤指摘として棄却: 「ThreeView 点群のレイヤ切替時メモリリーク」→ buildPoints() 冒頭で
+  disposeGroup(s.points) 実施済み（ThreeView.tsx:322）。
+
+### 5.4 テスト（T系。数値は 5.0 参照）
+
+- **T-A [High]** FE の agentActions.ts（エージェント action→store 反映、~90行）と io.ts
+  （プロジェクト JSON 入出力・座標変換）が完全未テスト。ユーザー向け入出力なので回帰リスク大。
+- **T-B [Med]** /api/agent/chat の疑似 E2E（プロバイダをモックし context+message→actions の型を検証）
+  が無い。test_agent.py 17本はガード/パーサ中心。
+- **T-C [Med]** hybrid_astar のテストが3本と希薄（grid_astar は13本）。同シード決定性・狭所 U-turn の
+  成立/明示失敗テストを追加。
+- **T-D [Med]** 負系不足: 不正 LAS（壊れたヘッダ）、サイズ超過、矛盾制約（req_switchback ∧ max_sb=0）、
+  未知 vehicle_id。
+- **T-E [Med]** NumberField 単体テスト（"-" 入力→blur で復元、範囲外→クランプ commit 等）。
+- **T-F [Low]** tiles は正常系カバー済み（test_api.py:714）。OOB z/x/y → 404 の負系のみ追加余地。
+  レビューエージェントの「tiles テストゼロ」「projects ロック不備」は誤指摘（RLock 実装済み）として棄却。
+- **T-G [Low]** 緩い許容値の根拠コメント化（radius−0.8m、Z±1.0m、hybrid 1.3x 等）。
+
+### 5.5 棄却した指摘（裏取りで否定）
+
+| 指摘 | 棄却理由 |
+|---|---|
+| ThreeView 点群 dispose 漏れ | disposeGroup を再構築前に必ず呼ぶ実装を確認 |
+| tiles ルータ テストゼロ | test_api.py:714 で PNG マジックまで検証済み |
+| projects.json 並行破壊 | threading.RLock で全書き込み保護済み（並行テスト追加は Low） |
+| 後退ギア上限が遷移で破られる | velocity.py が cusp で v=0 を強制、正しい（エージェント自身も撤回） |
+
+### 5.6 実施順の提案（ユーザー承認待ち）
+
+1. **P1 安全・小改修**: K2（cusp マージン診断＋UI警告）→ K3（fleet 制動距離の保守化）→ K4（skid ガード）
+2. **P2 UX 一貫性**: U1（NumberField 統一＋日本語化）→ U2(点群ロード busy) → U3（進捗ドット）
+3. **P3 コード健全性**: B1+B8（CRS 判定一元化）→ B3（spotting 分割）→ B5（points.bin ストリーミング）
+4. **P4 テスト**: T-A（agentActions/io）→ T-C/T-D/T-E
+5. **P5 文書・将来**: K1（アーティキュレート近似の明記と v2 計画）→ K5/K6、B2 明文化
