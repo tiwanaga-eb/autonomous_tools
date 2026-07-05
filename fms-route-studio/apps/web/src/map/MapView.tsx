@@ -7,9 +7,11 @@ import { useEffect, useRef, useState } from "react";
 import Feature from "ol/Feature";
 import OLMap from "ol/Map";
 import View from "ol/View";
+import MousePosition from "ol/control/MousePosition";
+import ScaleLine from "ol/control/ScaleLine";
 import { defaults as defaultControls } from "ol/control/defaults";
 import type { Extent } from "ol/extent";
-import { LineString, MultiLineString, Point, Polygon } from "ol/geom";
+import { Circle as CircleGeom, LineString, Point, Polygon } from "ol/geom";
 import DragPan from "ol/interaction/DragPan";
 import Modify from "ol/interaction/Modify";
 import WebGLTileLayer from "ol/layer/WebGLTile";
@@ -18,340 +20,20 @@ import VectorLayer from "ol/layer/Vector";
 import GeoTIFF from "ol/source/GeoTIFF";
 import OSM from "ol/source/OSM";
 import VectorSource from "ol/source/Vector";
-import { Circle as CircleStyle, Fill, Stroke, Style } from "ol/style";
 import "ol/ol.css";
 
 import { api } from "@/api/client";
 import { dispatch } from "@/commandBus";
 import "@/map/proj";
 import { WORKING_CRS, WORKING_EPSG } from "@/map/proj";
+import { arrowGeom, bayPointAt, offsetEdges, vehicleShapeRings } from "@/map/overlayGeom";
+import type { VehShape } from "@/map/overlayGeom";
+import { FLEET_COLORS, overlayStyleFor } from "@/map/overlayStyles";
+import { downloadDataUrl, timestampName } from "@/exporters";
 import { pickLayer } from "@/layerSelect";
+import { fmtArea, fmtLength, polygonArea, polylineLength } from "@/measure";
 import { useStore } from "@/store/useStore";
 
-const ROUTE_STYLE = new Style({ stroke: new Stroke({ color: "#f59e0b", width: 3 }) });
-const WPLINE_STYLE = new Style({ stroke: new Stroke({ color: "#ffffffaa", width: 2 }) });
-const IMPORTED_STYLE = new Style({ stroke: new Stroke({ color: "#b91c1c", width: 3 }) });
-// 複数台(Fleet): 経路ごとの色（FleetPanel の ROUTE_COLORS と一致）。競合は赤で強調。
-const FLEET_COLORS = ["#2563eb", "#16a34a", "#d97706", "#9333ea", "#0891b2", "#db2777", "#65a30d", "#dc2626"];
-const _savedRouteStyleCache = new Map<string, Style>();
-function savedRouteStyle(color: string): Style {
-  let st = _savedRouteStyleCache.get(color);
-  if (!st) {
-    st = new Style({ stroke: new Stroke({ color, width: 2.5 }) });
-    _savedRouteStyleCache.set(color, st);
-  }
-  return st;
-}
-const CONFLICT_BOX_STYLE = new Style({
-  stroke: new Stroke({ color: "#ef4444", width: 1.5, lineDash: [5, 4] }),
-  fill: new Fill({ color: "#ef444422" }),
-});
-const CONFLICT_SEG_STYLE = new Style({ stroke: new Stroke({ color: "#ef4444", width: 6 }) });
-// Fleet sim: 各車マーカー（経路色の●、停止中=赤縁、完了=細縁）。
-const _fleetVehStyleCache = new Map<string, Style>();
-function fleetVehStyle(color: string, waiting: boolean): Style {
-  const key = `${color}|${waiting}`;
-  let st = _fleetVehStyleCache.get(key);
-  if (!st) {
-    st = new Style({
-      image: new CircleStyle({
-        radius: 7,
-        fill: new Fill({ color }),
-        stroke: new Stroke({ color: waiting ? "#ef4444" : "#ffffff", width: waiting ? 3 : 1.5 }),
-      }),
-    });
-    _fleetVehStyleCache.set(key, st);
-  }
-  return st;
-}
-const FLEET_ARROW_STYLE = new Style({ stroke: new Stroke({ color: "#111827", width: 1.5 }) });
-// すれ違い点（待避所）: 退避先を示すマーカー（シアンの四角＋本線からの接続線）。
-const FLEET_BAY_STYLE = new Style({
-  image: new CircleStyle({ radius: 6, fill: new Fill({ color: "#06b6d4cc" }), stroke: new Stroke({ color: "#ffffff", width: 1.5 }) }),
-});
-const FLEET_BAY_LINK_STYLE = new Style({ stroke: new Stroke({ color: "#06b6d4", width: 1.5, lineDash: [4, 3] }) });
-// 自動配置された待避所（auto_passing）: 手動(シアン)と区別してアンバー。
-const FLEET_AUTOBAY_STYLE = new Style({
-  image: new CircleStyle({ radius: 6, fill: new Fill({ color: "#f59e0bcc" }), stroke: new Stroke({ color: "#ffffff", width: 1.5 }) }),
-});
-const FLEET_AUTOBAY_LINK_STYLE = new Style({ stroke: new Stroke({ color: "#f59e0b", width: 1.5, lineDash: [4, 3] }) });
-
-// 経路点列の弧長 s_abs[m] 位置に、横オフセット offset を side 方向へ取った点と本線上の足を返す。
-function bayPointAt(xy: number[][], sAbs: number, offset: number, side: number): { foot: number[]; pos: number[] } | null {
-  if (xy.length < 2) return null;
-  const seg = xy.slice(1).map((p, k) => Math.hypot(p[0] - xy[k][0], p[1] - xy[k][1]));
-  let target = sAbs;
-  let idx = 0;
-  for (let k = 0; k < seg.length; k++) { if (target <= seg[k]) { idx = k; break; } target -= seg[k]; idx = k + 1; }
-  const j = Math.min(idx, xy.length - 2);
-  const p0 = xy[j], p1 = xy[j + 1];
-  const dx = p1[0] - p0[0], dy = p1[1] - p0[1];
-  const L = Math.hypot(dx, dy) || 1;
-  const nx = (-dy / L) * side, ny = (dx / L) * side;
-  return { foot: [p0[0], p0[1]], pos: [p0[0] + offset * nx, p0[1] + offset * ny] };
-}
-const AREA_STYLE = new Style({
-  fill: new Fill({ color: "#22c55e33" }),
-  stroke: new Stroke({ color: "#22c55e", width: 2 }),
-});
-const ACTIVE_POLY_STYLE = new Style({
-  stroke: new Stroke({ color: "#fbbf24", width: 2, lineDash: [6, 4] }),
-  fill: new Fill({ color: "#fbbf2422" }),
-});
-const POLY_VERTEX_STYLE = new Style({
-  image: new CircleStyle({ radius: 4, fill: new Fill({ color: "#fbbf24" }) }),
-});
-
-const ROADBAND_STYLE = new Style({
-  fill: new Fill({ color: "#f59e0b66" }),
-  stroke: new Stroke({ color: "#f59e0bcc", width: 1.5 }),
-});
-const RWPT_STYLE = new Style({
-  image: new CircleStyle({
-    radius: 2.5,
-    fill: new Fill({ color: "#fde68a" }),
-    stroke: new Stroke({ color: "#00000066", width: 1 }),
-  }),
-});
-const HILITE_STYLE = new Style({
-  image: new CircleStyle({
-    radius: 7,
-    fill: new Fill({ color: "#ffffff00" }),
-    stroke: new Stroke({ color: "#ffffff", width: 2 }),
-  }),
-});
-// 車体フットプリント（ホバー点に実寸の向き付き矩形）。包含が一目で分かるよう半透明白。
-const FOOTPRINT_STYLE = new Style({
-  fill: new Fill({ color: "#ffffff1f" }),
-  stroke: new Stroke({ color: "#ffffffcc", width: 1.5 }),
-});
-// 操舵輪（タイヤ）。アッカーマン操舵の角度を可視化。塗りつぶしの濃色。
-const WHEEL_STYLE = new Style({
-  fill: new Fill({ color: "#111827cc" }),
-  stroke: new Stroke({ color: "#fbbf24", width: 1.5 }),
-});
-// (x,y) に heading[deg] で向けた車体矩形(全長l×全幅w)の四隅リングを返す（中心基準）。
-function carRect(x: number, y: number, headingDeg: number, l: number, w: number): number[][] {
-  const a = (headingDeg * Math.PI) / 180;
-  const ca = Math.cos(a);
-  const sa = Math.sin(a);
-  const hl = l / 2;
-  const hw = w / 2;
-  const ring: number[][] = ([[hl, hw], [hl, -hw], [-hl, -hw], [-hl, hw]] as [number, number][]).map(
-    ([bx, by]) => [x + bx * ca - by * sa, y + bx * sa + by * ca],
-  );
-  ring.push(ring[0]);
-  return ring;
-}
-
-// 基準点(x,y)から前 frontExt / 後 rearExt（符号付き, 後は負）に伸ばす非対称矩形。
-// 基準点が車体中心でない車両（HM400=後輪軸中心）の車体を正しい位置に描く。
-function bodyRect(x: number, y: number, angleRad: number, frontExt: number, rearExt: number, w: number): number[][] {
-  const ca = Math.cos(angleRad);
-  const sa = Math.sin(angleRad);
-  const hw = w / 2;
-  const ring: number[][] = ([[frontExt, hw], [frontExt, -hw], [rearExt, -hw], [rearExt, hw]] as [number, number][]).map(
-    ([bx, by]) => [x + bx * ca - by * sa, y + bx * sa + by * ca],
-  );
-  ring.push(ring[0]);
-  return ring;
-}
-
-// ヒンジ点(hx,hy)から angle[rad] 方向へ length 伸ばす矩形（幅 width を横に中心化）。
-function segRectRing(hx: number, hy: number, angle: number, length: number, width: number): number[][] {
-  const ca = Math.cos(angle);
-  const sa = Math.sin(angle);
-  const px = -sa;
-  const py = ca;
-  const hw = width / 2;
-  const ex = hx + length * ca;
-  const ey = hy + length * sa;
-  const ring = [
-    [hx + hw * px, hy + hw * py],
-    [hx - hw * px, hy - hw * py],
-    [ex - hw * px, ey - hw * py],
-    [ex + hw * px, ey + hw * py],
-  ];
-  ring.push(ring[0]);
-  return ring;
-}
-
-// 選択車両の運動学つき形状（ホバー点の描画用）。
-interface VehShape {
-  l: number; w: number; kind: string;
-  wheelBase: number | null; trackWidth: number | null;
-  frontLen: number | null; rearLen: number | null;
-  maxArtic: number | null; maxSteer: number | null;
-  // 基準点(姿勢x,y,yaw)から見た車体の前後端 [m]（+前 / −後）。footprint_polygon の x 範囲。
-  // 対称車両では ±l/2、HM400 は基準点=後輪軸中心なので非対称（前+8.32 / 後−2.785）。
-  frontExt: number | null; rearExt: number | null;
-}
-
-type Pose = { x: number; y: number; heading_deg: number; curvature?: number; gear?: string | null };
-
-// 運動学を模擬した車両形状。舵角は曲率ベース δ=atan(L·κ)（アッカーマンで内外輪差）、関節角は κ·wheel_base。
-// 旋回方向の符号は位置の外積（CCW+）から、後進は実機構どおり逆位相（バイシクルモデルで確認）。
-// articulated: 前後2矩形をくの字に。rigid_bicycle: 車体＋アッカーマン操舵前輪。その他: 車体のみ。
-function vehicleShapeRings(
-  p: Pose, pPrev: Pose, pNext: Pose, v: VehShape,
-): { ring: number[][]; kind: string }[] {
-  const out: { ring: number[][]; kind: string }[] = [];
-  const a = (p.heading_deg * Math.PI) / 180;
-  // 旋回方向（外積 CCW+）。前進=曲率方向、後進=逆位相。
-  const cross = (p.x - pPrev.x) * (pNext.y - p.y) - (p.y - pPrev.y) * (pNext.x - p.x);
-  let sgn = cross > 1e-9 ? 1 : cross < -1e-9 ? -1 : 0;
-  if (p.gear === "R") sgn = -sgn;
-  const kappa = Math.abs(p.curvature ?? 0); // 曲率の大きさ（符号は sgn）
-
-  const frontExt = v.frontExt ?? v.l / 2;   // 基準点→前端（+）
-  const rearExt = v.rearExt ?? -v.l / 2;    // 基準点→後端（−）
-
-  if (v.kind === "articulated") {
-    const fl = v.frontLen ?? v.l / 2;
-    const rl = v.rearLen ?? v.l / 2;
-    const base = v.wheelBase ?? v.l * 0.6;
-    const cap = v.maxArtic ?? (45 * Math.PI) / 180;
-    const g = Math.max(-cap, Math.min(cap, sgn * kappa * base)); // 関節角（曲率×WB, capで頭打ち）
-    // 基準点=後輪軸中心。中折れ関節は前方 jointFwd = 前端 − 前ユニット長。
-    // 後ユニットは基準フレーム（heading a）に固定、前ユニットのみ関節角 g で中折れ。
-    const jointFwd = frontExt - fl;
-    const jx = p.x + jointFwd * Math.cos(a);
-    const jy = p.y + jointFwd * Math.sin(a);
-    out.push({ ring: segRectRing(jx, jy, a + g, fl, v.w), kind: "footprint" });        // 前ユニット（中折れ）
-    out.push({ ring: segRectRing(jx, jy, a + Math.PI, rl, v.w), kind: "footprint" });  // 後ユニット（基準フレーム）
-  } else if (v.kind === "rigid_bicycle") {
-    out.push({ ring: bodyRect(p.x, p.y, a, frontExt, rearExt, v.w), kind: "footprint" });
-    const L = v.wheelBase ?? v.l * 0.6;
-    const t = v.trackWidth ?? v.w * 0.85;
-    const ca = Math.cos(a);
-    const sa = Math.sin(a);
-    // タイヤ実寸（上面視）: 進行方向長＝タイヤ直径、横＝断面幅。大型ダンプは直径2.5m級。
-    const wlen = Math.max(v.l * 0.26, 1.6); // タイヤ直径
-    const wwid = Math.max(v.w * 0.13, 0.5); // タイヤ断面幅（シングル1本）
-    const cap = v.maxSteer ?? (45 * Math.PI) / 180;
-    let dL = 0;
-    let dR = 0;
-    if (kappa > 1e-6 && sgn !== 0) {
-      const R = 1 / (sgn * kappa); // 符号付き旋回半径。アッカーマン: 内外輪で角度が異なる
-      dL = Math.atan(L / (R - t / 2));
-      dR = Math.atan(L / (R + t / 2));
-    }
-    dL = Math.max(-cap, Math.min(cap, dL));
-    dR = Math.max(-cap, Math.min(cap, dR));
-    const wheel = (fx: number, fy: number, steer: number) => {
-      const wx = p.x + fx * ca - fy * sa;
-      const wy = p.y + fx * sa + fy * ca;
-      out.push({ ring: carRect(wx, wy, ((a + steer) * 180) / Math.PI, wlen, wwid), kind: "wheel" });
-    };
-    // 後輪は左右ともダブルタイヤ（2本並列）。前輪はシングル＋操舵。
-    const dualGap = wwid * 1.08; // ダブルタイヤ2本の中心間隔
-    const dualWheel = (fx: number, fy: number) => {
-      wheel(fx, fy + dualGap / 2, 0);
-      wheel(fx, fy - dualGap / 2, 0);
-    };
-    wheel(L / 2, t / 2, dL);   // 前左（操舵・シングル）
-    wheel(L / 2, -t / 2, dR);  // 前右（操舵・シングル）
-    dualWheel(-L / 2, t / 2);  // 後左（ダブル）
-    dualWheel(-L / 2, -t / 2); // 後右（ダブル）
-  } else {
-    out.push({ ring: bodyRect(p.x, p.y, a, frontExt, rearExt, v.w), kind: "footprint" });
-  }
-  return out;
-}
-
-// 寄り付きシミュレータ用
-const SPOT_FWD_STYLE = new Style({ stroke: new Stroke({ color: "#22d3ee", width: 3 }) });
-const SPOT_REV_STYLE = new Style({ stroke: new Stroke({ color: "#22d3ee", width: 3, lineDash: [5, 5] }) });
-const SPOT_EXIT_STYLE = new Style({ stroke: new Stroke({ color: "#e879f9", width: 2.5, lineDash: [3, 4] }) });
-const SPOT_SWITCH_STYLE = new Style({
-  image: new CircleStyle({ radius: 5, fill: new Fill({ color: "#fde047" }), stroke: new Stroke({ color: "#000", width: 1 }) }),
-});
-const SPOT_VEHICLE_STYLE = new Style({
-  image: new CircleStyle({ radius: 7, fill: new Fill({ color: "#ffffffcc" }), stroke: new Stroke({ color: "#0891b2", width: 2 }) }),
-});
-const SWITCHZONE_STYLE = new Style({
-  stroke: new Stroke({ color: "#16a34a", width: 2, lineDash: [8, 4] }),
-  fill: new Fill({ color: "#16a34a22" }),
-});
-// 確定済み Drivable 編集のアウトライン（include=緑 / exclude=赤）。どこを手修正したか可視化。
-const EDIT_INCLUDE_STYLE = new Style({
-  stroke: new Stroke({ color: "#22c55e", width: 2, lineDash: [4, 3] }),
-  fill: new Fill({ color: "#22c55e1f" }),
-});
-const EDIT_EXCLUDE_STYLE = new Style({
-  stroke: new Stroke({ color: "#ef4444", width: 2, lineDash: [4, 3] }),
-  fill: new Fill({ color: "#ef44441f" }),
-});
-function spotColor(role: string): string {
-  if (role === "spot_start") return "#a855f7";
-  if (role === "spot_switch") return "#16a34a"; // 手動切り返し点（緑）
-  if (role === "spot_exit_goal") return "#e879f9"; // 退出Goal（マゼンタ系）
-  return "#f97316";
-}
-function spotDotStyle(role: string): Style {
-  return new Style({
-    image: new CircleStyle({ radius: 6, fill: new Fill({ color: spotColor(role) }), stroke: new Stroke({ color: "#000a", width: 1 }) }),
-  });
-}
-function spotArrowStyle(role: string): Style {
-  return new Style({ stroke: new Stroke({ color: spotColor(role), width: 2.5 }) });
-}
-
-function roleColor(role: string): string {
-  return role === "start" ? "#22c55e" : role === "goal" ? "#ef4444" : "#0ea5e9";
-}
-
-function waypointStyle(role: string): Style {
-  return new Style({
-    image: new CircleStyle({
-      radius: 6,
-      fill: new Fill({ color: roleColor(role) }),
-      stroke: new Stroke({ color: "#00000088", width: 1 }),
-    }),
-  });
-}
-
-function headingStyle(role: string): Style {
-  return new Style({ stroke: new Stroke({ color: roleColor(role), width: 2.5 }) });
-}
-
-const HEADING_PREVIEW_STYLE = new Style({
-  stroke: new Stroke({ color: "#fbbf24", width: 2, lineDash: [4, 3] }),
-});
-
-// 位置(x,y)＋方位[deg, +East/CCW] の矢印を MultiLineString（軸＋2本の返し）で返す。
-function arrowGeom(x: number, y: number, headingDeg: number, L = 16, b = 5): MultiLineString {
-  const a = (headingDeg * Math.PI) / 180;
-  const tip: [number, number] = [x + L * Math.cos(a), y + L * Math.sin(a)];
-  const bl: [number, number] = [tip[0] + b * Math.cos(a + Math.PI * 0.83), tip[1] + b * Math.sin(a + Math.PI * 0.83)];
-  const br: [number, number] = [tip[0] + b * Math.cos(a - Math.PI * 0.83), tip[1] + b * Math.sin(a - Math.PI * 0.83)];
-  return new MultiLineString([
-    [[x, y], tip],
-    [bl, tip],
-    [br, tip],
-  ]);
-}
-
-// 中心線を左右に halfW[m] オフセットした縁を返す（道幅帯の描画用）
-function offsetEdges(pts: number[][], halfW: number): { left: number[][]; right: number[][] } {
-  const left: number[][] = [];
-  const right: number[][] = [];
-  const n = pts.length;
-  for (let i = 0; i < n; i++) {
-    const a = pts[Math.max(0, i - 1)];
-    const b = pts[Math.min(n - 1, i + 1)];
-    let tx = b[0] - a[0];
-    let ty = b[1] - a[1];
-    const L = Math.hypot(tx, ty) || 1;
-    tx /= L;
-    ty /= L;
-    const nx = -ty;
-    const ny = tx;
-    left.push([pts[i][0] + nx * halfW, pts[i][1] + ny * halfW]);
-    right.push([pts[i][0] - nx * halfW, pts[i][1] - ny * halfW]);
-  }
-  return { left, right };
-}
 
 // 現在の編集モードのラベル（地図上チップ表示用）
 const MODE_LABELS: Record<string, string> = {
@@ -359,6 +41,7 @@ const MODE_LABELS: Record<string, string> = {
   edit: "点を編集（ドラッグ）", pan: "移動（パン）", polygon: "ポリゴン描画",
   spot_start: "寄り付き 開始姿勢", spot_target: "寄り付き 目標姿勢",
   spot_switch: "切り返し点", spot_exit_goal: "退出Goal",
+  measure: "計測（距離・面積）",
 };
 const POSE_MODE_SET = new Set([
   "start", "goal", "spot_start", "spot_target", "spot_switch", "spot_exit_goal",
@@ -368,6 +51,7 @@ export function MapView() {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<OLMap | null>(null);
   const overlaySrcRef = useRef<VectorSource>(new VectorSource());
+  const fleetSimSrcRef = useRef<VectorSource>(new VectorSource()); // fleet 再生（毎フレーム更新）専用
   const modifyRef = useRef<Modify | null>(null);
   const dragPanRef = useRef<DragPan | null>(null);
   const previewRef = useRef<Feature | null>(null);
@@ -402,6 +86,7 @@ export function MapView() {
   const spotTarget = useStore((s) => s.spotTarget);
   const spotSwitchPose = useStore((s) => s.spotSwitchPose);
   const spotSwitchZoneId = useStore((s) => s.spotSwitchZoneId);
+  const spotContainAreaId = useStore((s) => s.spotContainAreaId);
   const spotExitGoal = useStore((s) => s.spotExitGoal);
   const spotRoadWidthM = useStore((s) => s.spotRoadWidthM);
   const drivableLayerId = useStore((s) => s.drivableLayerId);
@@ -414,6 +99,8 @@ export function MapView() {
   const fleetSim = useStore((s) => s.fleetSim);
   const fleetSimT = useStore((s) => s.fleetSimT);
   const fleetBays = useStore((s) => s.fleetBays);
+  const pilePlan = useStore((s) => s.pilePlan);
+  const measurePts = useStore((s) => s.measurePts);
 
   // 選択車両の寸法＋運動学（ホバー点の車両形状描画用: アーティキュレート2矩形 / アッカーマン操舵輪）。
   const [vehDims, setVehDims] = useState<VehShape | null>(null);
@@ -460,45 +147,17 @@ export function MapView() {
 
     const overlayLayer = new VectorLayer({
       source: overlaySrcRef.current,
-      style: (feature) => {
-        const kind = feature.get("kind");
-        if (kind === "waypoint") return waypointStyle(feature.get("role"));
-        if (kind === "heading") return headingStyle(feature.get("role"));
-        if (kind === "headingpreview") return HEADING_PREVIEW_STYLE;
-        if (kind === "route") return ROUTE_STYLE;
-        if (kind === "roadband") return ROADBAND_STYLE;
-        if (kind === "rwpt") return RWPT_STYLE;
-        if (kind === "hilite") return HILITE_STYLE;
-        if (kind === "footprint") return FOOTPRINT_STYLE;
-        if (kind === "wheel") return WHEEL_STYLE;
-        if (kind === "spotdot") return spotDotStyle(feature.get("role"));
-        if (kind === "spotarrow") return spotArrowStyle(feature.get("role"));
-        if (kind === "spotfwd") return SPOT_FWD_STYLE;
-        if (kind === "spotrev") return SPOT_REV_STYLE;
-        if (kind === "spotexit") return SPOT_EXIT_STYLE;
-        if (kind === "spotswitch") return SPOT_SWITCH_STYLE;
-        if (kind === "switchzone") return SWITCHZONE_STYLE;
-        if (kind === "editinclude") return EDIT_INCLUDE_STYLE;
-        if (kind === "editexclude") return EDIT_EXCLUDE_STYLE;
-        if (kind === "spotvehicle") return SPOT_VEHICLE_STYLE;
-        if (kind === "wpline") return WPLINE_STYLE;
-        if (kind === "imported") return IMPORTED_STYLE;
-        if (kind === "savedroute") return savedRouteStyle(feature.get("color") || "#2563eb");
-        if (kind === "conflictbox") return CONFLICT_BOX_STYLE;
-        if (kind === "conflictseg") return CONFLICT_SEG_STYLE;
-        if (kind === "fleetveh") return fleetVehStyle(feature.get("color") || "#2563eb", !!feature.get("waiting"));
-        if (kind === "fleetarrow") return FLEET_ARROW_STYLE;
-        if (kind === "fleetbay") return FLEET_BAY_STYLE;
-        if (kind === "fleetbaylink") return FLEET_BAY_LINK_STYLE;
-        if (kind === "fleetautobay") return FLEET_AUTOBAY_STYLE;
-        if (kind === "fleetautobaylink") return FLEET_AUTOBAY_LINK_STYLE;
-        if (kind === "area") return AREA_STYLE;
-        if (kind === "activepoly") return ACTIVE_POLY_STYLE;
-        if (kind === "polyvertex") return POLY_VERTEX_STYLE;
-        return undefined;
-      },
+      style: overlayStyleFor,
     });
     overlayLayer.setZIndex(1000);
+
+    // Fleet 再生専用レイヤ: fleetSimT は再生中に毎フレーム変わるため、
+    // 全オーバーレイの再構築を避けて車両マーカーだけを別ソースで更新する。
+    const fleetSimLayer = new VectorLayer({
+      source: fleetSimSrcRef.current,
+      style: overlayStyleFor,
+    });
+    fleetSimLayer.setZIndex(1001);
 
     // OSM ベースマップ（地理的文脈）。Web-Mercator タイルを 6677 ビューへ OL が自動再投影。
     // 最下層(zIndex 0)。既定は非表示で、データ層が無いときの位置把握用。
@@ -508,11 +167,18 @@ export function MapView() {
 
     const map = new OLMap({
       target: containerRef.current,
-      layers: [osmLayer, overlayLayer],
+      layers: [osmLayer, overlayLayer, fleetSimLayer],
       view: new View({ projection: WORKING_CRS, center: [0, 0], zoom: 2 }),
       // 既定のズーム(+/-)コントロールは左上の 2D/3D 切替と重なるため非表示
       // （ホイール/トラックパッドでズーム可。属性表示は残す）。
-      controls: defaultControls({ zoom: false }),
+      // スケールバー＋カーソル座標（作業CRSメートル）を常時表示＝現場座標の読み取り・距離感の基準。
+      controls: defaultControls({ zoom: false }).extend([
+        new ScaleLine({ units: "metric", minWidth: 80 }),
+        new MousePosition({
+          coordinateFormat: (c) => (c ? `X ${c[0].toFixed(1)} / Y ${c[1].toFixed(1)} m` : ""),
+          placeholder: "",
+        }),
+      ]),
     });
     mapRef.current = map;
 
@@ -529,6 +195,8 @@ export function MapView() {
         dispatch({ type: "INSERT_VIA", xy });
       } else if (st.mode === "polygon") {
         dispatch({ type: "ADD_POLY_VERTEX", xy });
+      } else if (st.mode === "measure") {
+        st.addMeasurePt(xy);
       }
     };
     viewport.addEventListener("click", onClick);
@@ -644,6 +312,11 @@ export function MapView() {
       viewport.removeEventListener("pointerup", onPointerUp);
       viewport.removeEventListener("pointerleave", onPointerLeave);
       viewport.removeEventListener("contextmenu", onCtxMenu);
+      // COG レイヤの source(worker/decoder) と layer を破棄してからマップを解放（リーク防止）。
+      for (const [, ent] of rasterLayersRef.current) {
+        (ent.layer.getSource() as GeoTIFF | null)?.dispose();
+        ent.layer.dispose();
+      }
       map.setTarget(undefined);
       mapRef.current = null;
       viewSetRef.current = false;
@@ -666,11 +339,13 @@ export function MapView() {
     );
     const wantedIds = new Set(wanted.map((l) => l.id));
 
-    // 不要 or version変更 のレイヤを除去
+    // 不要 or version変更 のレイヤを除去（GeoTIFF source と WebGLTileLayer も dispose し GPU/worker リークを防ぐ）
     for (const [id, ent] of existing) {
       const l = layers.find((x) => x.id === id);
       if (!wantedIds.has(id) || (l && (l.version ?? 1) !== ent.version)) {
         map.removeLayer(ent.layer);
+        (ent.layer.getSource() as GeoTIFF | null)?.dispose();
+        ent.layer.dispose();
         existing.delete(id);
       }
     }
@@ -727,6 +402,8 @@ export function MapView() {
         ring.push(ring[0]);
         const f = new Feature(new Polygon([ring]));
         f.set("kind", "area");
+        // 名前＋面積のラベル（overlayStyles.areaStyle が Text として描画）
+        f.set("label", `${a.name}\n${fmtArea(polygonArea(a.points))}`);
         f.setId(a.id); // edit モードの Modify で頂点移動を元エリアへ反映するため
         src.addFeature(f);
       }
@@ -802,38 +479,6 @@ export function MapView() {
       });
     }
 
-    // 簡易シミュレーション再生: 現在時刻 fleetSimT における各車の位置(●＋進行方向矢印)。
-    if (fleetSim && showFleet && fleetSim.traces.length) {
-      fleetSim.traces.forEach((tr, i) => {
-        if (!tr.length) return;
-        const dt = tr[1]?.t ? tr[1].t - tr[0].t : 0.2;
-        const idx = Math.max(0, Math.min(tr.length - 1, Math.round(fleetSimT / dt)));
-        const fr = tr[idx];
-        const color = FLEET_COLORS[i % FLEET_COLORS.length];
-        const dot = new Feature(new Point([fr.x, fr.y]));
-        dot.set("kind", "fleetveh");
-        dot.set("color", color);
-        dot.set("waiting", fr.state === "wait");
-        src.addFeature(dot);
-        const arr = new Feature(arrowGeom(fr.x, fr.y, fr.heading_deg));
-        arr.set("kind", "fleetarrow");
-        src.addFeature(arr);
-      });
-      // 自動配置された待避所（auto_passing で挿入）をアンバーで表示。
-      (fleetSim.auto_bays ?? []).forEach((ab) => {
-        const pts = savedRoutes[ab.vehicle]?.route?.trajectory?.points ?? [];
-        if (pts.length < 2) return;
-        const bp = bayPointAt(pts.map((p) => [p.x, p.y]), ab.s_center, ab.offset, ab.side);
-        if (!bp) return;
-        const link = new Feature(new LineString([bp.foot, bp.pos]));
-        link.set("kind", "fleetautobaylink");
-        src.addFeature(link);
-        const m = new Feature(new Point(bp.pos));
-        m.set("kind", "fleetautobay");
-        src.addFeature(m);
-      });
-    }
-
     // 道幅帯（中心線±幅/2）。道幅指定があればそれ、無ければ選択車両の車幅で「実車の走行幅」を可視化。
     // route線より先に追加して下に敷く。
     const bandWidth = roadWidthM > 0 ? roadWidthM : vehDims?.w ?? 0;
@@ -894,6 +539,28 @@ export function MapView() {
       src.addFeature(f);
     });
 
+    // 計測ツール（距離・面積）: 折れ線＋頂点、3点以上は閉じ線（面積対象）を点線で描画
+    if (measurePts.length >= 2) {
+      const line = new Feature(new LineString(measurePts.map((p) => [p.x, p.y])));
+      line.set("kind", "measureline");
+      src.addFeature(line);
+    }
+    if (measurePts.length >= 3) {
+      const close = new Feature(
+        new LineString([
+          [measurePts[measurePts.length - 1].x, measurePts[measurePts.length - 1].y],
+          [measurePts[0].x, measurePts[0].y],
+        ]),
+      );
+      close.set("kind", "measureclose");
+      src.addFeature(close);
+    }
+    measurePts.forEach((p) => {
+      const f = new Feature(new Point([p.x, p.y]));
+      f.set("kind", "measurevertex");
+      src.addFeature(f);
+    });
+
     // 寄り付き: start/target 姿勢（点＋方位矢印）
     const spotPose = (pose: { x: number; y: number; heading_deg: number } | null, role: string) => {
       if (!pose) return;
@@ -926,6 +593,21 @@ export function MapView() {
       });
     }
 
+    // 排土（パイル）配置: 基部円（実寸）＋中心点
+    if (pilePlan && pilePlan.centers.length) {
+      const r = pilePlan.pile.radius_m;
+      pilePlan.centers.forEach(([px, py]) => {
+        if (r > 0) {
+          const base = new Feature(new CircleGeom([px, py], r));
+          base.set("kind", "pilebase");
+          src.addFeature(base);
+        }
+        const dot = new Feature(new Point([px, py]));
+        dot.set("kind", "pilecenter");
+        src.addFeature(dot);
+      });
+    }
+
     // 切り返し可能エリア（選択中の area を強調）
     if (spotSwitchZoneId) {
       const z = areas.find((a) => a.id === spotSwitchZoneId);
@@ -934,6 +616,18 @@ export function MapView() {
         ring.push(ring[0]);
         const f = new Feature(new Polygon([ring]));
         f.set("kind", "switchzone");
+        src.addFeature(f);
+      }
+    }
+
+    // 走行を収めるエリア（containment: 選択中の area を青破線で強調＝適用中であることを可視化）
+    if (spotContainAreaId) {
+      const z = areas.find((a) => a.id === spotContainAreaId);
+      if (z && z.points.length >= 3) {
+        const ring = z.points.map((p) => [p.x, p.y]);
+        ring.push(ring[0]);
+        const f = new Feature(new Polygon([ring]));
+        f.set("kind", "containzone");
         src.addFeature(f);
       }
     }
@@ -976,7 +670,91 @@ export function MapView() {
         src.addFeature(f);
       }
     }
-  }, [waypoints, route, areas, activePolygon, importedRoutes, roadWidthM, vehDims, showWaypoints, spotStart, spotTarget, spotSwitchPose, spotSwitchZoneId, spotExitGoal, spotRoadWidthM, spotResult, layers, drivableLayerId, savedRoutes, showSavedRoutes, fleetConflicts, activeFeature, fleetSim, fleetSimT, fleetBays]);
+  }, [waypoints, route, areas, activePolygon, importedRoutes, roadWidthM, vehDims, showWaypoints, spotStart, spotTarget, spotSwitchPose, spotSwitchZoneId, spotContainAreaId, spotExitGoal, spotRoadWidthM, spotResult, layers, drivableLayerId, savedRoutes, showSavedRoutes, fleetConflicts, activeFeature, fleetBays, pilePlan, measurePts]);
+
+  // ---- スクリーンキャプチャ: 全レイヤの canvas を1枚に合成して PNG 保存（OL公式パターン） ----
+  useEffect(() => {
+    const onCapture = () => {
+      const map = mapRef.current;
+      const container = containerRef.current;
+      if (!map || !container) return;
+      map.once("rendercomplete", () => {
+        const size = map.getSize();
+        if (!size) return;
+        // OL 公式の map-export パターン: 各レイヤ canvas を style.transform で合成（CSSピクセル基準）
+        const out = document.createElement("canvas");
+        out.width = size[0];
+        out.height = size[1];
+        const ctx = out.getContext("2d");
+        if (!ctx) return;
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, out.width, out.height);
+        container.querySelectorAll<HTMLCanvasElement>(".ol-layer canvas, canvas.ol-layer").forEach((cv) => {
+          if (cv.width === 0) return;
+          const parent = cv.parentNode as HTMLElement | null;
+          const opacity = parent?.style.opacity || cv.style.opacity;
+          ctx.globalAlpha = opacity === "" ? 1 : Number(opacity);
+          const tf = cv.style.transform;
+          let m = tf ? tf.match(/^matrix\(([^(]*)\)$/)?.[1].split(",").map(Number) : undefined;
+          if (!m || m.length !== 6) {
+            const sx = (parseFloat(cv.style.width) || out.width) / cv.width;
+            const sy = (parseFloat(cv.style.height) || out.height) / cv.height;
+            m = [sx, 0, 0, sy, 0, 0];
+          }
+          ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
+          const bg = parent?.style.backgroundColor;
+          if (bg) {
+            ctx.fillStyle = bg;
+            ctx.fillRect(0, 0, cv.width, cv.height);
+          }
+          ctx.drawImage(cv, 0, 0);
+        });
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.globalAlpha = 1;
+        downloadDataUrl(timestampName("map", "png"), out.toDataURL("image/png"));
+        useStore.getState().setStatus("地図をキャプチャしました（PNG保存）", "success");
+      });
+      map.renderSync();
+    };
+    window.addEventListener("frs:capture", onCapture);
+    return () => window.removeEventListener("frs:capture", onCapture);
+  }, []);
+
+  // ---- Fleet 再生（現在時刻 fleetSimT の各車位置）: 毎フレーム変わるため専用ソースだけを更新 ----
+  useEffect(() => {
+    const src = fleetSimSrcRef.current;
+    src.clear();
+    const showFleet = showSavedRoutes || activeFeature === "fleet";
+    if (!fleetSim || !showFleet || !fleetSim.traces.length) return;
+    fleetSim.traces.forEach((tr, i) => {
+      if (!tr.length) return;
+      const dt = tr[1]?.t ? tr[1].t - tr[0].t : 0.2;
+      const idx = Math.max(0, Math.min(tr.length - 1, Math.round(fleetSimT / dt)));
+      const fr = tr[idx];
+      const color = FLEET_COLORS[i % FLEET_COLORS.length];
+      const dot = new Feature(new Point([fr.x, fr.y]));
+      dot.set("kind", "fleetveh");
+      dot.set("color", color);
+      dot.set("waiting", fr.state === "wait");
+      src.addFeature(dot);
+      const arr = new Feature(arrowGeom(fr.x, fr.y, fr.heading_deg));
+      arr.set("kind", "fleetarrow");
+      src.addFeature(arr);
+    });
+    // 自動配置された待避所（auto_passing で挿入）をアンバーで表示。
+    (fleetSim.auto_bays ?? []).forEach((ab) => {
+      const pts = savedRoutes[ab.vehicle]?.route?.trajectory?.points ?? [];
+      if (pts.length < 2) return;
+      const bp = bayPointAt(pts.map((p) => [p.x, p.y]), ab.s_center, ab.offset, ab.side);
+      if (!bp) return;
+      const link = new Feature(new LineString([bp.foot, bp.pos]));
+      link.set("kind", "fleetautobaylink");
+      src.addFeature(link);
+      const m = new Feature(new Point(bp.pos));
+      m.set("kind", "fleetautobay");
+      src.addFeature(m);
+    });
+  }, [fleetSim, fleetSimT, savedRoutes, showSavedRoutes, activeFeature]);
 
   // ---- Analysisグラフのホバー点を地図上にハイライト＋車両矩形を動的表示（共有index）----
   // AnalysisPanel と同じ「アクティブ解析」を参照: 寄り付き工程で寄り付き解析があればその軌跡、
@@ -1074,7 +852,7 @@ export function MapView() {
     vp.style.cursor =
       mode === "pan" ? "grab"
       : mode === "edit" ? "pointer"
-      : POSE_MODE_SET.has(mode) || mode === "polygon" || mode === "insert_via" || mode === "via" ? "crosshair"
+      : POSE_MODE_SET.has(mode) || mode === "polygon" || mode === "measure" || mode === "insert_via" || mode === "via" ? "crosshair"
       : "default";
   }, [mode]);
 
@@ -1123,7 +901,19 @@ export function MapView() {
         {MODE_LABELS[mode] ?? mode}
         {POSE_MODE_SET.has(mode) && <span className="mc-hint"> ・ クリック=位置 / 左ドラッグ=方位 / 右ドラッグ=移動</span>}
         {mode === "polygon" && <span className="mc-hint"> ・ クリックで頂点追加</span>}
+        {mode === "measure" && <span className="mc-hint"> ・ クリックで計測点追加 / Backspace=1点戻す / Esc=クリア</span>}
       </div>
+      {mode === "measure" && (
+        <div className="map-measure">
+          <b>📏 計測</b>
+          <div>距離: {measurePts.length >= 2 ? fmtLength(polylineLength(measurePts)) : "—（2点以上）"}</div>
+          <div>面積: {measurePts.length >= 3 ? fmtArea(polygonArea(measurePts)) : "—（3点以上で閉じて計算）"}</div>
+          <div className="row" style={{ marginTop: 4 }}>
+            <button onClick={() => useStore.getState().undoMeasurePt()} disabled={measurePts.length === 0}>1点戻す</button>
+            <button onClick={() => useStore.getState().clearMeasure()} disabled={measurePts.length === 0}>クリア</button>
+          </div>
+        </div>
+      )}
       <div className="map-toolbar">
         <button onClick={() => zoomBy(1)} title="ズームイン">
           ＋

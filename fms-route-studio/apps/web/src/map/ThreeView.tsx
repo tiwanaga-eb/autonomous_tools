@@ -7,7 +7,9 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 import { api } from "@/api/client";
+import type { PointCloud } from "@/api/client";
 import { dispatch } from "@/commandBus";
+import { downloadDataUrl, timestampName } from "@/exporters";
 import { pickLayer } from "@/layerSelect";
 import { useStore } from "@/store/useStore";
 import type { XY } from "@/types/api";
@@ -15,10 +17,6 @@ import type { XY } from "@/types/api";
 interface Grid {
   nx: number; ny: number; x0: number; y0: number; dx: number; dy: number;
   z: (number | null)[][]; zmin: number; zmax: number;
-}
-interface Points {
-  n: number; x: number[]; y: number[]; z: number[];
-  has_rgb: boolean; rgb: number[][] | null; zmin: number; zmax: number;
 }
 
 function elevColor(t: number): [number, number, number] {
@@ -45,7 +43,7 @@ export function ThreeView() {
     edit: THREE.Group; // 作成中ポリゴン＋編集ハンドル
     raycaster: THREE.Raycaster; ndc: THREE.Vector2;
     drag: { kind: "waypoint" | "areavtx"; id: string; index: number; obj: THREE.Object3D } | null;
-    origin: { ox: number; oy: number; oz: number }; grid: Grid | null; pts: Points | null; raf: number;
+    origin: { ox: number; oy: number; oz: number }; grid: Grid | null; pts: PointCloud | null; raf: number;
   } | null>(null);
 
   const layers = useStore((s) => s.layers);
@@ -57,10 +55,12 @@ export function ThreeView() {
   const spotResult = useStore((s) => s.spotResult);
   const spotStart = useStore((s) => s.spotStart);
   const spotTarget = useStore((s) => s.spotTarget);
+  const pilePlan = useStore((s) => s.pilePlan);
   const vExag = useStore((s) => s.vExag);
   const roadWidthM = useStore((s) => s.roadWidthM);
   const mode3d = useStore((s) => s.view3dMode);
   const pointSize = useStore((s) => s.pointSize);
+  const pointBudget = useStore((s) => s.pointBudget);
   const setStatus = useStore((s) => s.setStatus);
 
   const costLayerId = useStore((s) => s.costLayerId);
@@ -98,7 +98,7 @@ export function ThreeView() {
       renderer, scene, camera, controls, content, terrain, points, edit,
       raycaster: new THREE.Raycaster(), ndc: new THREE.Vector2(),
       drag: null as null | { kind: "waypoint" | "areavtx"; id: string; index: number; obj: THREE.Object3D },
-      origin: { ox: 0, oy: 0, oz: 0 }, grid: null as Grid | null, pts: null as Points | null, raf: 0,
+      origin: { ox: 0, oy: 0, oz: 0 }, grid: null as Grid | null, pts: null as PointCloud | null, raf: 0,
     };
     st.current = s;
     const loop = () => { s.raf = requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera); };
@@ -169,6 +169,8 @@ export function ThreeView() {
       dom.removeEventListener("pointerdown", onDown);
       dom.removeEventListener("pointermove", onMove);
       dom.removeEventListener("pointerup", onUp);
+      // 各グループの geometry/material を最終破棄（アンマウント時の GPU メモリリーク防止）。
+      disposeGroup(s.terrain); disposeGroup(s.points); disposeGroup(s.content); disposeGroup(s.edit);
       controls.dispose(); renderer.dispose();
       if (renderer.domElement.parentElement === el) el.removeChild(renderer.domElement);
       st.current = null;
@@ -319,28 +321,44 @@ export function ThreeView() {
     const s = st.current; if (!s) return;
     disposeGroup(s.points);
     const p = s.pts; if (!p || p.n < 1) return;
-    const pos = new Float32Array(p.n * 3), col = new Float32Array(p.n * 3);
-    const span = p.zmax - p.zmin || 1;
-    for (let i = 0; i < p.n; i++) {
-      const [lx, ly, lz] = toLocal(p.x[i], p.y[i], p.z[i]);
-      pos[i * 3] = lx; pos[i * 3 + 1] = ly; pos[i * 3 + 2] = lz;
-      if (p.has_rgb && p.rgb) {
-        col[i * 3] = p.rgb[i][0] / 255; col[i * 3 + 1] = p.rgb[i][1] / 255; col[i * 3 + 2] = p.rgb[i][2] / 255;
-      } else {
-        const [cr, cg, cb] = elevColor((p.z[i] - p.zmin) / span);
-        col[i * 3] = cr; col[i * 3 + 1] = cg; col[i * 3 + 2] = cb;
-      }
+    // バイナリ点群は点群中心(origin)相対の f32。シーン原点との差分だけ足して一括変換
+    // （100万点級でも JS ループ1本＋色は uint8 正規化属性で GPU 直渡し）。
+    const o = s.origin;
+    const dx = p.origin[0] - o.ox;
+    const dy = p.origin[1] - o.oy;
+    const dz = p.origin[2] - o.oz;
+    const n = p.n;
+    const pos = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      pos[i * 3] = p.x[i] + dx;
+      pos[i * 3 + 1] = p.z[i] + dz;
+      pos[i * 3 + 2] = -(p.y[i] + dy);
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-    geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+    if (p.rgb) {
+      geo.setAttribute("color", new THREE.BufferAttribute(p.rgb, 3, true)); // uint8 → 0..1 正規化
+    } else {
+      const col = new Float32Array(n * 3);
+      const span = p.zmax - p.zmin || 1;
+      for (let i = 0; i < n; i++) {
+        const [cr, cg, cb] = elevColor((p.z[i] + p.origin[2] - p.zmin) / span);
+        col[i * 3] = cr; col[i * 3 + 1] = cg; col[i * 3 + 2] = cb;
+      }
+      geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+    }
     s.points.add(new THREE.Points(geo, new THREE.PointsMaterial({ size: pointSize, vertexColors: true, sizeAttenuation: false })));
   }
 
-  function lineFromXY(pts: XY[], color: number, lift: number) {
+  function lineFromXY(pts: (XY & { z?: number | null })[], color: number, lift: number) {
     if (pts.length < 2) return null;
     const v: number[] = [];
-    for (const p of pts) { const [lx, ly, lz] = toLocal(p.x, p.y, sampleElev(p.x, p.y) + lift); v.push(lx, ly, lz); }
+    for (const p of pts) {
+      // 埋め込み済み標高 z（点群DSM実測）があれば優先。無ければ粗い表示グリッドから補間。
+      const base = p.z ?? sampleElev(p.x, p.y);
+      const [lx, ly, lz] = toLocal(p.x, p.y, base + lift);
+      v.push(lx, ly, lz);
+    }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.Float32BufferAttribute(v, 3));
     return new THREE.Line(geo, new THREE.LineBasicMaterial({ color }));
@@ -407,8 +425,29 @@ export function ThreeView() {
     const s = st.current; if (!s) return;
     disposeGroup(s.content);
     areas.forEach((a) => s.content.add(areaGroup(a.points)));
+
+    // 排土（パイル）計画: 実寸の円錐（安息角の錐体）を地形に沿わせて配置。
+    // 全パイル同一寸法なので InstancedMesh 1つで描画（数百個でも軽量）。
+    if (pilePlan && pilePlan.centers.length) {
+      const r = pilePlan.pile.radius_m;
+      const h = pilePlan.pile.height_m;
+      if (r > 0 && h > 0) {
+        const geo = new THREE.ConeGeometry(r, h, 28);
+        const mat = new THREE.MeshStandardMaterial({ color: 0xb45309, transparent: true, opacity: 0.92, roughness: 0.95 });
+        const inst = new THREE.InstancedMesh(geo, mat, pilePlan.centers.length);
+        const m4 = new THREE.Matrix4();
+        pilePlan.centers.forEach(([px, py], i) => {
+          // ConeGeometry は高さ中央が原点（頂点+Y）→ 接地させるため 地面標高 + h/2 に置く
+          const [lx, ly, lz] = toLocal(px, py, sampleElev(px, py) + h / 2);
+          m4.makeTranslation(lx, ly, lz);
+          inst.setMatrixAt(i, m4);
+        });
+        inst.instanceMatrix.needsUpdate = true;
+        s.content.add(inst);
+      }
+    }
     if (route && route.trajectory.points.length > 1) {
-      const center = route.trajectory.points.map((p) => ({ x: p.x, y: p.y }));
+      const center = route.trajectory.points.map((p) => ({ x: p.x, y: p.y, z: p.z }));
       if (roadWidthM > 0) {
         const band = roadBand(center, roadWidthM / 2);
         if (band) s.content.add(band);
@@ -419,9 +458,12 @@ export function ThreeView() {
     waypoints.forEach((w) => s.content.add(marker(w.xy.x, w.xy.y, w.role === "start" ? 0x22c55e : w.role === "goal" ? 0xef4444 : 0x0ea5e9)));
     if (spotResult && spotResult.points.length > 1) {
       let runStart = 0; const pts = spotResult.points;
+      // 寄り付きの標高は解析軌跡（同一点列から構築＝index 対応）の z を使う
+      const tz = spotResult.trajectory?.points?.length === pts.length ? spotResult.trajectory.points : null;
       for (let i = 1; i <= pts.length; i++) {
         if (i === pts.length || pts[i].gear !== pts[runStart].gear) {
-          const l = lineFromXY(pts.slice(runStart, i).map((p) => ({ x: p.x, y: p.y })), pts[runStart].gear === "R" ? 0xf97316 : 0x22d3ee, 1.0);
+          const seg = pts.slice(runStart, i).map((p, k) => ({ x: p.x, y: p.y, z: tz?.[runStart + k]?.z }));
+          const l = lineFromXY(seg, pts[runStart].gear === "R" ? 0xf97316 : 0x22d3ee, 1.0);
           if (l) s.content.add(l); runStart = i;
         }
       }
@@ -441,8 +483,17 @@ export function ThreeView() {
     let half = 150;
     if (s.grid) half = Math.max(Math.abs(s.grid.dx * s.grid.nx), Math.abs(s.grid.dy * s.grid.ny)) / 2;
     else if (s.pts && s.pts.n) {
-      const xs = s.pts.x, ys = s.pts.y;
-      half = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) / 2 || 150;
+      // typed array は spread 不可（引数上限）なのでループで bbox を取る
+      const p = s.pts;
+      let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
+      for (let i = 0; i < p.n; i++) {
+        const X = p.x[i], Y = p.y[i];
+        if (X < minx) minx = X;
+        if (X > maxx) maxx = X;
+        if (Y < miny) miny = Y;
+        if (Y > maxy) maxy = Y;
+      }
+      half = Math.max(maxx - minx, maxy - miny) / 2 || 150;
     }
     s.camera.position.set(half * 0.9, half * 1.1, half * 1.3);
     s.controls.target.set(0, 0, 0); s.controls.update();
@@ -452,35 +503,39 @@ export function ThreeView() {
   useEffect(() => {
     const s = st.current; if (!s) return;
     let cancelled = false;
+    const ac = new AbortController();
     (async () => {
+      // 大規模点群（数百万点）は取得〜GPU転送に数秒かかるため busy 表示を出す
+      const gBusy = useStore.getState().setBusy;
+      if (lasLayer) gBusy(true, `3D点群を読込中…（上限 ${pointBudget.toLocaleString()} 点）`);
       const [grid, pts] = await Promise.all([
-        costLayer ? api.dsmGrid(costLayer.id, 240).catch(() => null) : Promise.resolve(null),
-        lasLayer ? api.layerPoints(lasLayer.id, 200000).catch(() => null) : Promise.resolve(null),
-      ]);
+        costLayer ? api.dsmGrid(costLayer.id, 240, ac.signal).catch(() => null) : Promise.resolve(null),
+        lasLayer ? api.layerPointsBin(lasLayer.id, pointBudget, ac.signal).catch(() => null) : Promise.resolve(null),
+      ]).finally(() => gBusy(false));
       if (cancelled || !st.current) return;
       s.grid = grid; s.pts = pts;
       if (grid) {
         s.origin = { ox: grid.x0 + (grid.dx * (grid.nx - 1)) / 2, oy: grid.y0 + (grid.dy * (grid.ny - 1)) / 2, oz: (grid.zmin + grid.zmax) / 2 };
       } else if (pts && pts.n) {
-        const cx = (Math.min(...pts.x) + Math.max(...pts.x)) / 2, cy = (Math.min(...pts.y) + Math.max(...pts.y)) / 2;
-        s.origin = { ox: cx, oy: cy, oz: (pts.zmin + pts.zmax) / 2 };
+        s.origin = { ox: pts.origin[0], oy: pts.origin[1], oz: pts.origin[2] };
       } else {
         const p = route?.trajectory.points ?? [];
         s.origin = p.length ? { ox: p[0].x, oy: p[0].y, oz: 0 } : { ox: 0, oy: 0, oz: 0 };
       }
       buildTerrain(); buildPoints(); rebuildContent(); rebuildEdit(); applyVExag(); applyPointSize(); applyMode(); fitCamera();
       if (mode3d === "points" && !pts) setStatus("3D点群: LASレイヤがありません（地形メッシュに切替可）");
+      else if (pts && pts.n) setStatus(`3D点群: ${pts.n.toLocaleString()} 点を表示（上限 ${pointBudget.toLocaleString()}）`, "info");
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; ac.abort(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [costLayer?.id, lasLayer?.id]);
+  }, [costLayer?.id, lasLayer?.id, pointBudget]);
 
   // route/spotting/wp/道幅 変化は **content のみ**再構築（terrain/points は作り直さない＝重い再確保を回避）
   useEffect(() => {
     if (!st.current) return;
     rebuildContent();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [route, areas, waypoints, spotResult, spotStart, spotTarget, roadWidthM]);
+  }, [route, areas, waypoints, spotResult, spotStart, spotTarget, roadWidthM, pilePlan]);
 
   // 作成中ポリゴン・編集ハンドルは edit グループのみ再構築
   useEffect(() => {
@@ -488,6 +543,19 @@ export function ThreeView() {
     rebuildEdit();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activePolygon, mode, areas, waypoints]);
+
+  // スクリーンキャプチャ: 直前に明示レンダリングしてから toDataURL（preserveDrawingBuffer 不要）
+  useEffect(() => {
+    const onCapture = () => {
+      const s = st.current;
+      if (!s) return;
+      s.renderer.render(s.scene, s.camera);
+      downloadDataUrl(timestampName("3d", "png"), s.renderer.domElement.toDataURL("image/png"));
+      useStore.getState().setStatus("3Dビューをキャプチャしました（PNG保存）", "success");
+    };
+    window.addEventListener("frs:capture", onCapture);
+    return () => window.removeEventListener("frs:capture", onCapture);
+  }, []);
 
   // 鉛直強調は group.scale.y で反映（頂点再構築なし）
   useEffect(() => { applyVExag(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [vExag]);

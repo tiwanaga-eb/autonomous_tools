@@ -29,6 +29,14 @@ from ..footprint import (
 )
 from ..planners.dubins import plan_dubins, reverse_dubins, sample_dubins
 from ..planners.reeds_shepp import reeds_shepp_paths
+from .stationary import (
+    headings as _headings,
+    insert_endpoint_margin as _insert_endpoint_margin,
+    resolve_no_stationary,
+    segments_from_hybrid as _segments_from_hybrid,
+    states_to_tuples as _states_to_tuples,
+    straight_pts as _straight_pts,
+)
 
 
 @dataclass
@@ -57,6 +65,7 @@ class SpottingResult:
     total_turn_rad: float = 0.0
     score: float = float("inf")
     approach_error_m: float = 0.0
+    approach_error_deg: float | None = None  # 目標方位との差[°]（絶対値, 0..180。tyaw 供給時のみ）
     feasible: bool = False
     status: str = "NO_PATH"
     footprint_inside: bool | None = None   # 車体フットプリントが全姿勢でエリア内か（None=未評価）
@@ -65,6 +74,7 @@ class SpottingResult:
     allow_stationary: bool = True          # 据え切り(端点その場操舵)を許したか（解決後の実効値）
     endpoint_margin_start_m: float = 0.0   # 出発端に入れた直線リードイン長[m]（0=なし＝据え切り）
     endpoint_margin_goal_m: float = 0.0    # 到着端に入れた直線リードアウト長[m]（0=なし＝据え切り）
+    min_cusp_margin_m: float | None = None  # 内部cusp(切り返し点)の実効直線マージン最小値[m]（None=内部cuspなし。~0=狭所で挿入不可＝据え切り必要）
 
 
 def _polyline_len(pts: np.ndarray) -> float:
@@ -73,44 +83,23 @@ def _polyline_len(pts: np.ndarray) -> float:
     return float(np.sum(np.hypot(*np.diff(pts, axis=0).T)))
 
 
-def _headings(pts: np.ndarray, gear: str) -> np.ndarray:
-    n = len(pts)
-    h = np.zeros(n)
-    if n < 2:
-        return h
-    d = np.diff(pts, axis=0)
-    ang = np.arctan2(d[:, 1], d[:, 0])
-    h[:-1] = ang
-    h[-1] = ang[-1]
-    if gear == "R":
-        # 後進は車体が進行方向の逆向き → 接線に +π して車体方位へ。
-        # arctan2 は (-π,π] なので (h + 2π) % 2π - π = wrap(h+π) が +π ラップになる。
-        h = (h + 2 * math.pi) % (2 * math.pi) - math.pi
-    return h
-
-
 def _perp(yaw: float):
     return (-math.sin(yaw), math.cos(yaw))
-
-
-def _straight_pts(a, b, step: float):
-    """a→b の直線を step 間隔でサンプル（両端含む）。返値 [(x,y), ...]。"""
-    d = math.hypot(b[0] - a[0], b[1] - a[1])
-    n = max(1, int(round(d / max(step, 1e-6))))
-    return [(a[0] + (b[0] - a[0]) * i / n, a[1] + (b[1] - a[1]) * i / n) for i in range(n + 1)]
 
 
 def _adapt_margin(tip_dir, P, ux, uy, gear, margin, step, fp_ok):
     """cusp のオーバーシュート tip がエリア内に収まる最大マージンを選ぶ（狭窄エリア対応）。
 
     tip = P + tip_dir·m·(ux,uy)。fp_ok が無ければ margin をそのまま返す。tip 区間（P→tip）の
-    数点で車体フットプリントを判定し、はみ出さない最大の m を採用。最小マージン(0.2·margin)でも
-    はみ出す場合はそれを返す（その姿勢自体が不可なので候補は別途 infeasible になる）。
+    数点で車体フットプリントを判定し、はみ出さない最大の m を採用。**どの長さでもはみ出す場合は
+    0.0（挿入なし）**を返す — 包含はハード制約（安全ゲート）であり、直線マージンは追従性の
+    ヒューリスティックなので、狭所では「マージンよりも収まること」を優先する（cusp では停止する
+    ため、最悪でも停止中の据え切りで追従できる）。
     """
     if fp_ok is None or margin <= 0:
         return margin
     yaw = math.atan2(uy, ux) + (math.pi if gear == "R" else 0.0)
-    for m in (margin, 0.66 * margin, 0.4 * margin, 0.2 * margin):
+    for m in (margin, 0.66 * margin, 0.4 * margin, 0.2 * margin, 0.1 * margin):
         ok = True
         nchk = max(2, int(m / max(step, 1e-6)) + 1)
         for i in range(1, nchk + 1):
@@ -120,7 +109,7 @@ def _adapt_margin(tip_dir, P, ux, uy, gear, margin, step, fp_ok):
                 break
         if ok:
             return m
-    return 0.2 * margin
+    return 0.0
 
 
 def _apply_cusp_margins(segments, margin: float, step: float, fp_ok=None):
@@ -148,6 +137,8 @@ def _apply_cusp_margins(segments, margin: float, step: float, fp_ok=None):
             continue
         ux, uy = dx / L, dy / L
         m = _adapt_margin(1.0, P, ux, uy, pg, margin, step, fp_ok)  # tip は前進方向(+)へ
+        if m <= 1e-9:
+            continue  # どの長さでもはみ出す → 挿入なし（cusp 停止中の据え切りで追従）
         Pp = (P[0] + m * ux, P[1] + m * uy)
         pp.extend(_straight_pts(P, Pp, step)[1:])           # 前セグ: P→Pp 直進オーバーシュート（同ギア）
         segs[k] = (_straight_pts(Pp, P, step) + cp[1:], cg)  # 現セグ: Pp→P 直進(後進)＋元の続き
@@ -155,7 +146,37 @@ def _apply_cusp_margins(segments, margin: float, step: float, fp_ok=None):
     return segs
 
 
-def _stage_segments(start, S, Syaw, target, rho, step, margin, fp_ok=None):
+def _cusp_margins_of(points: list[dict]) -> list[float]:
+    """内部 cusp（ギア反転点）ごとの実効直線マージン[m]を最終点列から実測する（診断用）。
+
+    _adapt_margin は狭所でマージンを短縮・スキップ（=0）し得るが、その事実は挿入時に
+    記録されない。そこで解決後の点列から cusp 前後の「方位ドリフト2°以内の弧長」を測り、
+    短い側をその cusp の実効マージンとする。~0 は据え切りが必要な cusp を意味し、
+    据え切り禁止時の UI 警告に使う。
+    """
+    out: list[float] = []
+    n = len(points)
+    for i in range(1, n):
+        if points[i]["gear"] == points[i - 1]["gear"]:
+            continue
+        h0 = points[i - 1]["heading_deg"]
+
+        def _run(idxs, base_s):
+            r = 0.0
+            for j in idxs:
+                if abs((points[j]["heading_deg"] - h0 + 180.0) % 360.0 - 180.0) > 2.0:
+                    break
+                r = abs(points[j]["s"] - base_s)
+            return r
+
+        back = _run(range(i - 1, -1, -1), points[i - 1]["s"])
+        fwd = _run(range(i, n), points[i]["s"])
+        out.append(min(back, fwd))
+    return out
+
+
+def _stage_segments(start, S, Syaw, target, rho, step, margin, fp_ok=None,
+                    start_lead: float = 0.0, goal_lead: float = 0.0):
     """前進(start→S)＋後進(S→target) を、**切り返し点 S に直線マージン**を挟んで構成する。
 
     切り返し点では実車はステアリングを 0°(直進)にしてから前後を反転する必要がある。Dubins の
@@ -164,66 +185,48 @@ def _stage_segments(start, S, Syaw, target, rho, step, margin, fp_ok=None):
     （ステア0°）になり追従できる。返値 [(fwd_pts,"F"),(rev_pts,"R")] or None。
 
     fp_ok を与えると、手前マージン区間(S_pre→S)がエリアをはみ出さない範囲までマージンを短縮する。
+
+    start_lead / goal_lead > 0（据え切り禁止）: **端点直線を生成時から織り込む**。
+    出発は start から start_lead 直進した姿勢を Dubins の始点に、到着は target の手前
+    goal_lead（車体方位の +方向。後進ドックでは通過順に target'→target）を終点にする。
+    後付けのスプライス（Dubins 再接続）より確実で、狭所でも端点が曲がった候補が選ばれない。
     """
-    if margin <= 0:
-        f = sample_dubins(start, (S[0], S[1], Syaw), rho, step)
-        r = reverse_dubins((S[0], S[1], Syaw), target, rho, step)
-        return None if (f is None or r is None) else [(f, "F"), (r, "R")]
+    sx0, sy0, syaw0 = float(start[0]), float(start[1]), float(start[2])
+    tx0, ty0, tyaw0 = float(target[0]), float(target[1]), float(target[2])
+    pre: list = []
+    start_eff = (sx0, sy0, syaw0)
+    if start_lead > 0:
+        s1 = (sx0 + start_lead * math.cos(syaw0), sy0 + start_lead * math.sin(syaw0))
+        pre = _straight_pts((sx0, sy0), s1, step)      # start→(直進)→start'
+        start_eff = (s1[0], s1[1], syaw0)
+    post: list = []
+    target_eff = (tx0, ty0, tyaw0)
+    if goal_lead > 0:
+        t1 = (tx0 + goal_lead * math.cos(tyaw0), ty0 + goal_lead * math.sin(tyaw0))
+        post = _straight_pts(t1, (tx0, ty0), step)     # target'→(直線後進)→target
+        target_eff = (t1[0], t1[1], tyaw0)
+
     c, s = math.cos(Syaw), math.sin(Syaw)
     # 手前マージン区間 S_pre→S（前進ヘッディング=Syaw）がエリア内に収まるよう margin を適応短縮。
-    margin = _adapt_margin(-1.0, S, c, s, "F", margin, step, fp_ok)
+    if margin > 0:
+        margin = _adapt_margin(-1.0, S, c, s, "F", margin, step, fp_ok)
+    if margin <= 1e-9:  # マージン無し（狭所で挿入余地なし or 指定0）: S へ直接接続
+        f = sample_dubins(start_eff, (S[0], S[1], Syaw), rho, step)
+        r = reverse_dubins((S[0], S[1], Syaw), target_eff, rho, step)
+        if f is None or r is None:
+            return None
+        return [(pre + list(f)[1:] if pre else list(f), "F"),
+                (list(r) + post[1:] if post else list(r), "R")]
     S_pre = (S[0] - margin * c, S[1] - margin * s)  # S の手前（進入方位の逆へ margin）
-    f_dub = sample_dubins(start, (S_pre[0], S_pre[1], Syaw), rho, step)
-    r_dub = reverse_dubins((S_pre[0], S_pre[1], Syaw), target, rho, step)
+    f_dub = sample_dubins(start_eff, (S_pre[0], S_pre[1], Syaw), rho, step)
+    r_dub = reverse_dubins((S_pre[0], S_pre[1], Syaw), target_eff, rho, step)
     if f_dub is None or r_dub is None:
         return None
-    fwd = list(f_dub) + _straight_pts(S_pre, S, step)[1:]          # …→S_pre→(直線)→S
-    rev = _straight_pts(S, S_pre, step) + list(r_dub)[1:]          # S→(直線後進)→S_pre→…→target
+    fwd = (pre + list(f_dub)[1:] if pre else list(f_dub)) + _straight_pts(S_pre, S, step)[1:]  # …→S_pre→(直線)→S
+    rev = _straight_pts(S, S_pre, step) + list(r_dub)[1:]          # S→(直線後進)→S_pre→…→target'
+    if post:
+        rev = rev + post[1:]                                        # →(直線後進)→target
     return [(fwd, "F"), (rev, "R")]
-
-
-def _insert_endpoint_margin(pts, gear, fixed_pose, e, rho, step, fp_ok, *, at_start):
-    """経路端（停止する固定姿勢 start/target）に直線マージンを挿入し端点曲率を0にする（据え切り回避）。
-
-    固定姿勢に接する直線 e[m] を作り、その先で元経路へ Dubins 再接続する。固定姿勢の位置・方位は
-    厳密保持。区間が短ければ e を自動短縮（後進差し込みは区間が短くなりがち）。エリア(fp_ok)を
-    逸脱する場合は挿入せず元の点列を返す（狭隘地での best-effort 後退）。
-    返値 (新点列, 実際に入れた直線長[m])。0.0 は挿入なし。at_start=False は末尾固定(goal側)。
-    """
-    pts = np.asarray(pts, float)
-    if e <= 0 or len(pts) < 4:
-        return pts, 0.0
-    rev = not at_start
-    work = pts[::-1].copy() if rev else pts             # work[0] を固定端へ統一
-    g = ("R" if gear == "F" else "F") if rev else gear  # 反転で進行方向が反転
-    yaw = float(fixed_pose[2])
-    seglen = np.hypot(*np.diff(work, axis=0).T)
-    s = np.concatenate([[0.0], np.cumsum(seglen)])
-    # 区間長に収まるよう直線長を短縮（短い後進差し込みでも端点を直線化＝据え切り回避）。
-    e = min(e, 0.45 * float(s[-1]))
-    if e < 0.8:
-        return pts, 0.0                                # 区間が極端に短く直線化の意味がない
-    iQ = max(2, min(len(work) - 2, int(np.searchsorted(s, e))))
-    hd = _headings(work, g)
-    Q = work[iQ]
-    hQ = float(hd[iQ])
-    travel = 1.0 if g == "F" else -1.0
-    c, sn = math.cos(yaw), math.sin(yaw)
-    p0 = (float(work[0, 0]), float(work[0, 1]))
-    core = (p0[0] + travel * e * c, p0[1] + travel * e * sn)
-    straight = _straight_pts(p0, core, step)           # 固定端→core の直線（ここで端点曲率0）
-    recon = (sample_dubins((core[0], core[1], yaw), (Q[0], Q[1], hQ), rho, step) if g == "F"
-             else reverse_dubins((core[0], core[1], yaw), (Q[0], Q[1], hQ), rho, step))
-    if recon is None or len(recon) < 2:
-        return pts, 0.0
-    new = np.asarray([list(p) for p in straight] + [list(p) for p in recon[1:]]
-                     + [list(x) for x in work[iQ + 1:]], float)
-    if fp_ok is not None:
-        hh = _headings(new, g)
-        for i in range(len(new)):
-            if not fp_ok(float(new[i, 0]), float(new[i, 1]), float(hh[i])):
-                return pts, 0.0                        # エリア逸脱 → 挿入断念（据え切りは残るが安全）
-    return (new[::-1].copy() if rev else new), e
 
 
 def _allow_stationary_default(vehicle) -> bool:
@@ -329,7 +332,7 @@ def _footprint_scan(states, fp_samp, fp_inv, mask, ignore_ends_m):
 
 
 def _build(segments, speed_fwd, speed_rev, transform, mask, dt, cost, obstacle_value, cmax, footprint, tx, ty,
-           fp_samp=None, fp_inv=None, ignore_ends_m=0.0):
+           fp_samp=None, fp_inv=None, ignore_ends_m=0.0, tyaw=None):
     """segments=[(pts, gear), ...] → SpottingResult（メトリクス・コスト積分・クリアランス算出）。
 
     fp_samp/fp_inv（車体サンプル点＋逆アフィン）を与えると **向き付きフットプリントの包含**を
@@ -408,6 +411,14 @@ def _build(segments, speed_fwd, speed_rev, transform, mask, dt, cost, obstacle_v
         for i in range(n)
     ]
 
+    # 到達方位誤差[°]（目標 yaw が与えられた場合のみ。P-008「一発到達精度 ±0.5m/±5°」の方位側）
+    err_deg = None
+    if tyaw is not None and states:
+        d = (states[-1]["heading_deg"] - math.degrees(tyaw)) % 360.0
+        err_deg = float(min(d, 360.0 - d))
+    # 内部 cusp の実効直線マージン（診断）。manual_switch_pose 等の early-return 経路も
+    # 含め全結果に付くよう、最終選択時ではなくここで実測する。
+    cms = _cusp_margins_of(states) if switch_points else []
     res = SpottingResult(
         points=states, switch_points=switch_points,
         length_total=length_fwd + length_rev, length_fwd=length_fwd, length_rev=length_rev,
@@ -416,6 +427,8 @@ def _build(segments, speed_fwd, speed_rev, transform, mask, dt, cost, obstacle_v
         cost_integral=cost_integral,
         total_turn_rad=total_turn,
         approach_error_m=float(np.hypot(states[-1]["x"] - tx, states[-1]["y"] - ty)) if states else 1e9,
+        approach_error_deg=err_deg,
+        min_cusp_margin_m=(round(min(cms), 2) if cms else None),
     )
     # フットプリント包含（向き付き）が使えるならそれをハード制約に。狭窄エリアで切り返し点を
     # 含む全姿勢の車体がエリア内に収まるかを厳密判定する（ユーザー要件）。
@@ -430,26 +443,6 @@ def _build(segments, speed_fwd, speed_rev, transform, mask, dt, cost, obstacle_v
         res.feasible = (cmin is None) or (cmin >= footprint)
         res.status = "OK" if res.feasible else "COLLISION"
     return res
-
-
-def _segments_from_hybrid(pts):
-    """hybrid_astar の (x,y,yaw,gear) 列を gear 連続区間ごとの [(np点列, gear), ...] に分割。"""
-    n = len(pts)
-    segs = []
-    i = 0
-    while i < n - 1:
-        g = pts[i + 1][3]  # i→i+1 の移動 gear
-        j = i + 1
-        while j < n - 1 and pts[j + 1][3] == g:
-            j += 1
-        segs.append((np.array([(pts[k][0], pts[k][1]) for k in range(i, j + 1)], float), g))
-        i = j
-    return segs
-
-
-def _states_to_tuples(points):
-    """SpottingResult.points(dict列) を (x,y,yaw[rad],gear) タプル列へ（segment分割用）。"""
-    return [(p["x"], p["y"], math.radians(p["heading_deg"]), p["gear"]) for p in points]
 
 
 def _seg_headings(pts):
@@ -559,22 +552,67 @@ def _smooth_segment(pts, accept, r_min, step, *, lock_start_m: float = 0.0, lock
 
 
 def _hybrid_candidate(start, target, rho, cost, mask, transform, obstacle_value, allow_reverse, ev,
-                      margin=0.0, step=0.3, fp_ok=None):
+                      margin=0.0, step=0.3, fp_ok=None, footprint=None, wrap=None):
     """コストに沿って滑らかに曲がる cost-aware 候補（hybrid A*, 後進可）。失敗時 None。
-    内部 cusp にも直線マージンを挿入して追従可能にする。"""
+    内部 cusp にも直線マージンを挿入して追従可能にする。
+
+    footprint: 車体サンプル点（footprint_sample_points）。与えると**探索自体が向き付き車体の
+    包含を制約**する＝狭いエリアでも「車体が収まる」N点ターンを hybrid が構築できる
+    （従来は中心点判定で探索→ ev の footprint 評価で全滅し、狭所で解が出なかった）。
+
+    1回目は粗い格子（速い）。不成立/はみ出しなら **細格子＋細ヨーで再試行**（狭所は格子が粗いと
+    切り返しの置き場が量子化で消えるため）。細試行は max_iters でバウンドする。
+    """
     from ..planners.hybrid_astar import hybrid_astar
 
-    res = hybrid_astar(
-        start, target, rho=rho, mask=mask, transform=transform, cost=cost,
-        obstacle_value=obstacle_value, allow_reverse=allow_reverse,
-        xy_res=max(rho * 0.3, 1.0), yaw_res_deg=15.0,
-        pos_tol=max(rho * 0.3, 1.5), analytic_radius=max(2.5 * rho, 8.0),
-        soft_cost_weight=2.0, reverse_penalty=2.0, cusp_penalty=6.0, max_iters=50000,
-    )
-    if res is None:
-        return None
-    segs = _segments_from_hybrid(res["points"])
-    return ev(_apply_cusp_margins(segs, margin, step, fp_ok)) if segs else None
+    attempts = [
+        dict(xy_res=max(rho * 0.3, 1.0), yaw_res_deg=15.0, pos_tol=max(rho * 0.3, 1.5), max_iters=50000),
+    ]
+    # 細格子リトライは「footprint 制約つきの狭所」専用（粗い格子では切り返しの置き場が量子化で
+    # 消えるため）。footprint が無い不成立は幾何でなくクリアランス等が原因＝細格子でも解けないので
+    # やらない。反復上限は自由セル数でスケールし、解が無いケースの全探索を防ぐ。
+    if footprint is not None and mask is not None:
+        free = int((mask > 0).sum())
+        attempts.append(dict(xy_res=max(rho * 0.12, 0.7), yaw_res_deg=10.0,
+                             pos_tol=max(rho * 0.15, 1.0),
+                             max_iters=int(min(150000, max(30000, free * 10)))))
+    best = None
+    for a in attempts:
+        res = hybrid_astar(
+            start, target, rho=rho, mask=mask, transform=transform, cost=cost,
+            obstacle_value=obstacle_value, allow_reverse=allow_reverse,
+            footprint=footprint,
+            analytic_radius=max(2.5 * rho, 8.0),
+            soft_cost_weight=2.0, reverse_penalty=2.0, cusp_penalty=6.0, **a,
+        )
+        if res is None:
+            continue
+        segs = _segments_from_hybrid(res["points"])
+        if not segs:
+            continue
+        if wrap is not None:
+            # 据え切り禁止: start′/goal′ で計画した経路に、元の固定姿勢までの直線リードを接合する。
+            # 直線の走行ギアは隣接セグメントと一致が条件（不一致=この変種は成立しない）。
+            (p_start, s_gear, s_lead), (p_goal, t_gear, t_lead) = wrap
+            if s_lead > 0:
+                if segs[0][1] != s_gear:
+                    continue
+                pre = _straight_pts((p_start[0], p_start[1]),
+                                    (float(segs[0][0][0][0]), float(segs[0][0][0][1])), step)
+                segs[0] = (pre + [tuple(map(float, q)) for q in np.asarray(segs[0][0], float)[1:]], segs[0][1])
+            if t_lead > 0:
+                if segs[-1][1] != t_gear:
+                    continue
+                post = _straight_pts((float(segs[-1][0][-1][0]), float(segs[-1][0][-1][1])),
+                                     (p_goal[0], p_goal[1]), step)
+                segs[-1] = ([tuple(map(float, q)) for q in np.asarray(segs[-1][0], float)[:-1]] + post, segs[-1][1])
+        c = ev(_apply_cusp_margins(segs, margin, step, fp_ok))
+        if best is None or (c.feasible and not best.feasible) or \
+           (c.feasible == best.feasible and c.fp_max_frac < best.fp_max_frac):
+            best = c
+        if best is not None and best.feasible:
+            break  # 粗い試行で収まったら細試行は不要（速度優先）
+    return best
 
 
 def _score(res: SpottingResult, w: CostWeights) -> float:
@@ -656,6 +694,8 @@ def plan_spotting(
     margin = float(cusp_margin_m) if (cusp_margin_m and cusp_margin_m > 0) else max(0.4 * rho, 3.0)
     # 据え切り（出発/到着の端点で停止中に操舵）の可否。None は車種既定（履帯=可, ホイール=不可）。
     allow_stationary = allow_stationary_steer if allow_stationary_steer is not None else _allow_stationary_default(vehicle)
+    # 据え切り禁止時は端点直線リードを**候補の生成時から**織り込む（後付けスプライスより確実）。
+    end_lead = 0.0 if allow_stationary else margin
     cmax = float(cost[cost < obstacle_value].max()) if (cost is not None and np.any(cost < obstacle_value)) else 1.0
     cmax = cmax if cmax > 1e-9 else 1.0
 
@@ -667,12 +707,18 @@ def plan_spotting(
 
     # --- 向き付きフットプリント（実車体矩形）の包含判定をハード制約に。狭窄エリアで「切り返し点を
     #     含む全姿勢で車体がエリア外に出ない」ことを保証する。vehicle と領域が揃ったときのみ有効。---
-    fp_samp = fp_inv = None
+    fp_samp = fp_inv = fp_search = None
     fp_ok = None
     if vehicle is not None and drivable_mask is not None and transform is not None:
         poly = vehicle_footprint(vehicle)
         fp_samp = footprint_sample_points(poly, max(abs(transform.a), 0.5))
         fp_inv = _inv_affine(transform)
+        # hybrid A* の探索用フットプリント。粗すぎる（車体寸/6≈1.9m）と縁の細いはみ出しを
+        # 取り零して ev()（セル精度）と食い違うため、車体寸/12 か セル の粗い方を使う。
+        # 最終判定は fp_samp（セル精度）で ev() が再検査する。
+        fp_search = footprint_sample_points(
+            poly, max(abs(transform.a), max(vehicle.overall_width, vehicle.overall_length) / 12.0)
+        )
 
         def fp_ok(x, y, yaw):  # noqa: ANN001
             return footprint_clear(fp_samp, x, y, yaw, drivable_mask, fp_inv)
@@ -680,7 +726,7 @@ def plan_spotting(
     def ev(segments):
         return _build(segments, speed_fwd, speed_rev, transform, drivable_mask, dt, cost, obstacle_value,
                       cmax, footprint_radius, tx, ty, fp_samp=fp_samp, fp_inv=fp_inv,
-                      ignore_ends_m=footprint_ignore_ends_m)
+                      ignore_ends_m=footprint_ignore_ends_m, tyaw=tyaw)
 
     cands: list[SpottingResult] = []
     allow_switch = (max_switchbacks is None) or (max_switchbacks >= 1)
@@ -694,7 +740,8 @@ def plan_spotting(
     # --- 手動切り返し点モード: 指定姿勢 S を固定し、前進(start→S)＋後進(S→target) のみ生成 ---
     if manual_switch_pose is not None:
         Sx, Sy, Syaw = float(manual_switch_pose[0]), float(manual_switch_pose[1]), float(manual_switch_pose[2])
-        segs = _stage_segments(start, (Sx, Sy), Syaw, target, rho, step, margin, fp_ok)  # 切り返し点に直線マージン
+        segs = _stage_segments(start, (Sx, Sy), Syaw, target, rho, step, margin, fp_ok,
+                               start_lead=end_lead, goal_lead=end_lead)  # 切り返し点に直線マージン
         if segs is None:
             return SpottingResult(status="NO_PATH")
         res = ev(segs)
@@ -749,14 +796,26 @@ def plan_spotting(
                 for dh in dhs:
                     _add_pose(tx + d * math.cos(tyaw) + lat * tpx,
                               ty + d * math.sin(tyaw) + lat * tpy, tyaw + dh)
-        for d in (max(1.2 * rho, 5.0), max(2.0 * rho, 8.0), max(3.0 * rho, 12.0), max(4.0 * rho, 16.0)):
+        # (1b) 遠方・横に離れた**粗いシェル**: 密格子（横±1.5ρ・距離5ρまで）の外側、
+        #     横±2〜3ρ × 距離最大7ρ を方位24°刻みで覆う。近場が塞がったエリアや
+        #     「少し離れた広場で切り返して戻る」型の解を候補に乗せる（fp_ok 事前間引きで
+        #     エリア外は安価に落ちるため、広げても実評価数は増えにくい）。
+        dhs_coarse = tuple(math.radians(a) for a in range(-144, 145, 24))
+        for d in np.linspace(max(0.8 * rho, 3.0), max(7.0 * rho, 24.0), 6):
+            for lat in (2.0 * rho, -2.0 * rho, 2.5 * rho, -2.5 * rho, 3.0 * rho, -3.0 * rho):
+                for dh in dhs_coarse:
+                    _add_pose(tx + d * math.cos(tyaw) + lat * tpx,
+                              ty + d * math.sin(tyaw) + lat * tpy, tyaw + dh)
+        for d in (max(1.2 * rho, 5.0), max(2.0 * rho, 8.0), max(3.0 * rho, 12.0), max(4.0 * rho, 16.0),
+                  max(5.5 * rho, 20.0)):
             for bearing in (math.radians(a) for a in range(-160, 161, 20) if a != 0):
                 bdir = tyaw + bearing
                 for hfac in (0.3, 0.6, 1.0):
                     _add_pose(tx + d * math.cos(bdir), ty + d * math.sin(bdir), tyaw + hfac * bearing)
 
         def _eval_stage(p):
-            segs = _stage_segments(start, (p[0], p[1]), p[2], target, rho, step, margin, fp_ok)
+            segs = _stage_segments(start, (p[0], p[1]), p[2], target, rho, step, margin, fp_ok,
+                                   start_lead=end_lead, goal_lead=end_lead)
             return ev(segs) if segs is not None else None
 
         # 切り返し点 S に直線マージンを入れて追従可能に（S 前後でステア0°）。**並列評価**。
@@ -787,9 +846,26 @@ def plan_spotting(
     # --- cost-aware 候補: hybrid A*（コストに沿って滑らかに曲がる/後進可）。コストマップ or 領域がある時のみ ---
     if use_hybrid and (cost is not None or drivable_mask is not None):
         hc = _hybrid_candidate(start, target, rho, cost, drivable_mask, transform, obstacle_value, allow_switch, ev,
-                               margin=margin, step=step, fp_ok=fp_ok)
+                               margin=margin, step=step, fp_ok=fp_ok, footprint=fp_search)
         if hc is not None and _keep(hc):
             cands.append(hc)
+        if end_lead > 0:
+            # 据え切り禁止: 端点直線リードを織り込んだ hybrid 変種（start′/goal′ から計画し、
+            # 固定姿勢までの直線を接合）。狭所の K ターンはスプライス後付けでは端点を直線化
+            # できないため、探索自体をリード込みで行う。ギア組合せ4変種を試す。
+            sdx, sdy = math.cos(syaw), math.sin(syaw)
+            tdx, tdy = math.cos(tyaw), math.sin(tyaw)
+            for s_sign, s_gear in ((1.0, "F"), (-1.0, "R")):
+                st2 = (sx + s_sign * end_lead * sdx, sy + s_sign * end_lead * sdy, syaw)
+                for t_sign, t_gear in ((1.0, "R"), (-1.0, "F")):
+                    tg2 = (tx + t_sign * end_lead * tdx, ty + t_sign * end_lead * tdy, tyaw)
+                    hv = _hybrid_candidate(
+                        st2, tg2, rho, cost, drivable_mask, transform, obstacle_value, allow_switch, ev,
+                        margin=margin, step=step, fp_ok=fp_ok, footprint=fp_search,
+                        wrap=((start, s_gear, end_lead), (target, t_gear, end_lead)),
+                    )
+                    if hv is not None and _keep(hv):
+                        cands.append(hv)
 
     # 候補が1つも生成できなかった（例: method="hybrid_astar" なのに drivable/cost が無い、
     # 選択手法が指定姿勢に解を持たない等）。zone 制約由来ではないので NO_PATH を返す。
@@ -838,23 +914,16 @@ def plan_spotting(
 
     # --- 据え切り禁止: 始端(start)・終端(goal)に直線マージンを挿入し端点曲率を0にする。
     #     停止点でステア0°→漸増/漸減。**平滑化の有無に依らず**適用（据え切り回避は要件）。
+    #     ステージ候補は生成時からリード織り込み済み（既直線として検出）。RS/hybrid 等は後付け挿入。
+    #     選ばれた best が直線化できない場合は、**直線化できる次善候補へフォールバック**する
+    #     （旧: best のみ試し、失敗すると許可時と同一の経路が黙って返っていた）。
     #     挿入できた端はその長さ lead を記録し、後段の平滑化でロックして直線を保つ。---
     lead0 = leadN = 0.0
     if not allow_stationary and best.points:
-        segs0 = _segments_from_hybrid(_states_to_tuples(best.points))
-        if segs0:
-            np0, lead0 = _insert_endpoint_margin(segs0[0][0], segs0[0][1], start, margin, rho, step, _accept, at_start=True)
-            if lead0 > 0:
-                segs0[0] = (np0, segs0[0][1])
-            npN, leadN = _insert_endpoint_margin(segs0[-1][0], segs0[-1][1], target, margin, rho, step, _accept, at_start=False)
-            if leadN > 0:
-                segs0[-1] = (npN, segs0[-1][1])
-            if lead0 > 0 or leadN > 0:
-                cand = ev(segs0)
-                if cand.points:
-                    cand.score = _score(cand, w)
-                    cand.status = best.status if not cand.feasible else "OK"
-                    best = cand  # 据え切り回避は要件なのでスコア比較せず採用
+        best, lead0, leadN = resolve_no_stationary(
+            best, cands, start=start, target=target, margin=margin, rho=rho, step=step,
+            accept=_accept, ev=ev, score=lambda c: _score(c, w),
+        )
 
     # --- 平滑化ポストプロセス: 選択経路の曲率不連続(dκ/ds スパイク=速度低下)と蛇行を抑える。
     #     gear区間ごとに端点固定で平滑化。エリア外へ出る移動は拒否。悪化したら採用しない＝安全側。---

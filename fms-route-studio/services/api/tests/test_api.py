@@ -139,6 +139,26 @@ def test_plan_auto_grid_astar_and_grade(tmp_path):
     # ランプ DSM (z=0.1x) なので縦断勾配が入る
     assert any(p["grade_pct"] is not None for p in pts)
     assert j["analysis"]["max_grade_pct"] is not None
+    # 標高 z も自動埋め込みされる（点群由来 DSM のサンプル値 ≒ 0.1*(x-30000)）
+    zs = [p for p in pts if p.get("z") is not None]
+    assert zs, "trajectory points should carry z when DSM is present"
+    for p in zs:
+        assert abs(p["z"] - 0.1 * (p["x"] - 30000.0)) < 1.0
+
+    # 後付けサンプリング API（保存済みルート等への z 付与）
+    er = client.post(
+        "/api/elevation/sample",
+        json={"points": [{"x": 30010, "y": 119010}, {"x": 30040, "y": 119030}, {"x": -9999, "y": -9999}],
+              "costmap_layer_id": cost_id},
+    )
+    assert er.status_code == 200, er.text
+    ej = er.json()
+    assert ej["n"] == 3 and ej["n_missing"] == 1
+    assert ej["z"][2] is None
+    assert abs(ej["z"][0] - 1.0) < 1.0 and abs(ej["z"][1] - 4.0) < 1.0
+    # costmap_layer_id 省略時は DSM を持つ最新 cost レイヤへフォールバック
+    er2 = client.post("/api/elevation/sample", json={"points": [{"x": 30010, "y": 119010}]})
+    assert er2.status_code == 200 and er2.json()["layer_id"] == cost_id
 
     client.delete(f"/api/layers/{dv_id}")
     client.delete(f"/api/layers/{cost_id}")
@@ -708,11 +728,11 @@ def test_layer_upload_preview_and_tile():
     assert client.delete(f"/api/layers/{lid}").status_code == 200
 
 
-def _make_las(path):
-    xs = np.linspace(30000.0, 30050.0, 60)
-    ys = np.linspace(119000.0, 119040.0, 50)
+def _make_las(path, x0=30000.0, y0=119000.0):
+    xs = np.linspace(x0, x0 + 50.0, 60)
+    ys = np.linspace(y0, y0 + 40.0, 50)
     X, Y = np.meshgrid(xs, ys)
-    Z = 0.1 * (X - 30000.0)
+    Z = 0.1 * (X - x0)
     x, y, z = X.ravel(), Y.ravel(), Z.ravel()
     h = laspy.LasHeader(point_format=3, version="1.4")
     h.offsets = [x.min(), y.min(), z.min()]
@@ -720,6 +740,140 @@ def _make_las(path):
     las = laspy.LasData(h)
     las.x, las.y, las.z = x, y, z
     las.write(str(path))
+
+
+def test_plan_rejects_misregistered_layers(tmp_path):
+    """B3: costmap A と、別位置の costmap B から生成した drivable の組合せは
+    shape が同じでも transform が違う → co-registration 検証で 422 になる。"""
+    pa, pb = tmp_path / "a.las", tmp_path / "b.las"
+    _make_las(pa)
+    _make_las(pb, x0=40000.0, y0=120000.0)  # 同サイズ・別位置
+    ids = []
+    for p in (pa, pb):
+        with open(p, "rb") as f:
+            las_id = client.post("/api/layers/las", files={"file": (p.name, f, "application/octet-stream")}).json()["id"]
+        cost_id = client.post(
+            "/api/costmap",
+            json={"las_layer_id": las_id, "src_epsg": 6677, "target_epsg": 6677, "params": {"grid_size_m": 1.0}},
+        ).json()["id"]
+        ids.append((las_id, cost_id))
+    dv_b = client.post(
+        "/api/drivable",
+        json={"cost_layer_id": ids[1][1], "params": {"threshold": 1e9, "close_m": 0, "open_m": 0, "min_area_m2": 0, "clearance_m": 0}},
+    ).json()["id"]
+
+    r = client.post(
+        "/api/plan",
+        json={
+            "waypoints": [{"x": 30005, "y": 119005}, {"x": 30045, "y": 119035}],
+            "mode": "auto", "algorithm": "grid_astar", "vehicle_id": "HD785",
+            "costmap_layer_id": ids[0][1], "drivable_layer_id": dv_b, "spacing_m": 2.0,
+        },
+    )
+    assert r.status_code == 422, r.text
+    assert "グリッド" in r.json()["detail"]
+
+    client.delete(f"/api/layers/{dv_b}")
+    for las_id, cost_id in ids:
+        client.delete(f"/api/layers/{cost_id}")
+        client.delete(f"/api/layers/{las_id}")
+
+
+def test_earthworks_pile_plan():
+    """パイル配置: 撒き出しモード（V=24m³, t=0.5m, 60×30mエリア）→ 推奨間隔√48m・理論数37。"""
+    r = client.post(
+        "/api/earthworks/piles",
+        json={"polygon": [[0, 0], [60, 0], [60, 30], [0, 30]],
+              "repose_deg": 37.0, "volume_m3": 24.0, "spread_thickness_m": 0.5},
+    )
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["n_theory"] == 37
+    assert 0 < j["count"] <= 37 and len(j["centers"]) == j["count"]
+    assert j["pile"]["height_m"] > 0 and j["pile"]["radius_m"] > 0
+    assert abs(j["suggested_spacing_m"] ** 2 - 48.0) < 0.1
+
+    # 間隔指定モード（高さ指定・千鳥）
+    r2 = client.post(
+        "/api/earthworks/piles",
+        json={"polygon": [[0, 0], [40, 0], [40, 20], [0, 20]],
+              "repose_deg": 35.0, "height_m": 1.5, "dx_m": 6.0, "stagger": True},
+    )
+    assert r2.status_code == 200 and r2.json()["count"] > 0
+
+    # 入力不備（体積も高さも無し）→ 400
+    r3 = client.post("/api/earthworks/piles", json={"polygon": [[0, 0], [10, 0], [10, 10]], "dx_m": 5.0})
+    assert r3.status_code == 400
+
+
+def test_las_points_bin_roundtrip(tmp_path):
+    """バイナリ点群: ヘッダ解析→origin相対f32から絶対座標を復元し、JSON版と一致（±2cm）。"""
+    import struct
+
+    p = tmp_path / "c.las"
+    _make_las(p)
+    with open(p, "rb") as f:
+        las_id = client.post("/api/layers/las", files={"file": ("c.las", f, "application/octet-stream")}).json()["id"]
+
+    rb = client.get(f"/api/layers/{las_id}/points.bin", params={"max_points": 5000})
+    assert rb.status_code == 200 and rb.headers["content-type"].startswith("application/octet-stream")
+    buf = rb.content
+    magic, ver, has_rgb, _pad, n, ox, oy, oz, zmin, zmax = struct.unpack_from("<4sBBHI5d", buf, 0)
+    assert magic == b"FRSP" and ver == 1 and n > 0
+    off = struct.calcsize("<4sBBHI5d")
+    xs = np.frombuffer(buf, dtype="<f4", count=n, offset=off)
+    ys = np.frombuffer(buf, dtype="<f4", count=n, offset=off + 4 * n)
+    zs = np.frombuffer(buf, dtype="<f4", count=n, offset=off + 8 * n)
+    assert len(buf) == off + 12 * n + (3 * n if has_rgb else 0)
+    ax, ay = xs + ox, ys + oy
+    assert 29999.0 <= ax.min() and ax.max() <= 30051.0
+    assert 118999.0 <= ay.min() and ay.max() <= 119041.0
+    assert zmin <= float(zs.min() + oz) + 1e-3 and float(zs.max() + oz) <= zmax + 1e-3
+
+    rj = client.get(f"/api/layers/{las_id}/points", params={"max_points": 5000}).json()
+    assert rj["n"] == n
+    assert abs(rj["x"][0] - float(ax[0])) < 0.02 and abs(rj["y"][0] - float(ay[0])) < 0.02
+
+    client.delete(f"/api/layers/{las_id}")
+
+
+def test_costmap_from_wgs84_las_auto_reprojects(tmp_path):
+    """WGS84（ヘッダCRS無し・経緯度座標）の LAS が自動で作業ゾーンへ再投影される回帰。
+
+    従来は src_epsg 未指定＋ヘッダ CRS 無しだと度をメートル扱いして壊れていた。
+    経緯度らしき範囲（|x|<=180, |y|<=90）は WGS84 と推定して再投影する。
+    """
+    import rasterio
+
+    from planning_core.geometry import project
+
+    xs = np.linspace(30000.0, 30050.0, 40)
+    ys = np.linspace(119000.0, 119040.0, 30)
+    X, Y = np.meshgrid(xs, ys)
+    ll = project(np.column_stack([X.ravel(), Y.ravel()]), 6677, 4326)  # lon/lat（度）
+    h = laspy.LasHeader(point_format=3, version="1.4")  # CRS はあえて付けない
+    h.offsets = [float(ll[:, 0].min()), float(ll[:, 1].min()), 0.0]
+    h.scales = [1e-7, 1e-7, 0.001]
+    las = laspy.LasData(h)
+    las.x, las.y, las.z = ll[:, 0], ll[:, 1], np.zeros(len(ll))
+    p = tmp_path / "wgs84.las"
+    las.write(str(p))
+
+    with open(p, "rb") as f:
+        las_id = client.post("/api/layers/las", files={"file": ("wgs84.las", f, "application/octet-stream")}).json()["id"]
+    r = client.post("/api/costmap", json={"las_layer_id": las_id, "target_epsg": 6677,
+                                          "params": {"grid_size_m": 2.0}})
+    assert r.status_code == 200, r.text
+    m = r.json()
+    assert m["las_crs_source"] == "assumed_wgs84"
+    assert "推定" in (m.get("warning") or "")
+    with rasterio.open(m["cost_cog"]) as ds:
+        b = ds.bounds
+    # 度をメートル扱いしていれば範囲は ~1e2 の度数域。作業ゾーンの元座標(±5m)に一致すること。
+    assert abs(b.left - 30000.0) < 5.0 and abs(b.top - 119040.0) < 5.0
+
+    client.delete(f"/api/layers/{m['id']}")
+    client.delete(f"/api/layers/{las_id}")
 
 
 def test_costmap_from_las(tmp_path):
@@ -890,3 +1044,112 @@ def test_fleet_junction_api():
     j = client.post("/api/fleet/junction", json={"points": pts, "s_frac": 0.5}).json()
     assert abs(j["x"] - 50.0) < 2.0 and abs(j["y"]) < 1e-6
     assert abs(((j["heading_deg"] + 180) % 360) - 180) < 1e-6
+
+
+# ---- 負系（不正入力がクラッシュ(500)ではなく明確なエラーになる） ----
+
+
+def test_upload_corrupt_las_rejected_422():
+    """壊れた LAS はアップロード時点で 422（従来は登録が通り costmap 生成で 500）。"""
+    r = client.post(
+        "/api/layers/las",
+        files={"file": ("broken.las", b"this is not a las file at all", "application/octet-stream")},
+    )
+    assert r.status_code == 422
+    assert "LAS" in r.json()["detail"]
+    # 失敗したアップロードはレイヤ一覧に残らない
+    assert all(l["filename"] != "broken.las" for l in client.get("/api/layers").json()["layers"])
+
+
+def test_plan_unknown_vehicle_404():
+    r = client.post(
+        "/api/plan",
+        json={
+            "waypoints": [
+                {"x": 0.0, "y": 0.0, "role": "start"},
+                {"x": 50.0, "y": 0.0, "role": "goal"},
+            ],
+            "vehicle_id": "UNKNOWN_VEHICLE_XX",
+        },
+    )
+    assert r.status_code == 404
+    assert "unknown vehicle" in r.json()["detail"]
+
+
+def test_spotting_require_switchback_with_zero_max_is_forward_only():
+    """矛盾指定（require_switchback=True ∧ max_switchbacks=0）は切返し不可が優先され前進のみで解く。
+
+    仕様: require_switchback は max_switchbacks>=1 のときだけ効く（spotting docstring）。
+    500 やエラーにならないことを固定化する。
+    """
+    r = client.post(
+        "/api/simulate/spotting",
+        json={
+            "start": {"x": 0.0, "y": 0.0, "heading_deg": 0.0},
+            "target": {"x": 40.0, "y": 5.0, "heading_deg": 0.0},
+            "min_turn_radius_m": 8.0,
+            "max_switchbacks": 0,
+            "require_switchback": True,
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["metrics"]["n_switchbacks"] == 0
+
+
+def test_las_upload_auto_generates_ortho(tmp_path):
+    """LAS 取り込みで オルソ が自動生成される（las2ortho 内蔵化）。RGB 無し LAS は Z グレー。"""
+    p = tmp_path / "auto_ortho.las"
+    _make_las(p)
+    with open(p, "rb") as f:
+        body = client.post("/api/layers/las", files={"file": (p.name, f, "application/octet-stream")}).json()
+    assert body.get("ortho_error") is None, body.get("ortho_error")
+    oid = body.get("auto_ortho_id")
+    assert oid, "auto_ortho_id should be set"
+    om = client.get(f"/api/layers/{oid}").json()
+    assert om["kind"] == "ortho" and om["source_las"] == body["id"]
+    assert om["bands"] == 3 and om["width"] > 0 and om["height"] > 0
+    # プレビューが描画できる（COG として妥当）
+    pv = client.get(f"/api/layers/{oid}/preview.png")
+    assert pv.status_code == 200 and pv.content[:8] == PNG_MAGIC
+    client.delete(f"/api/layers/{oid}")
+    client.delete(f"/api/layers/{body['id']}")
+
+
+def test_las_epsg_patch_moves_ortho_and_costmap(tmp_path):
+    """CRS 無し LAS に PATCH /epsg で座標系を後付け → オルソ/コストマップの配置が変わる。
+
+    現場 LAS はヘッダ CRS 欠落が常態（las2ortho も override_srs 前提）。指定後の再生成で
+    正しい位置に移動できることを固定化する。
+    """
+    p = tmp_path / "noepsg.las"
+    _make_las(p)  # ヘッダ CRS なし・メートル座標 → 既定は「作業CRSのまま」
+    with open(p, "rb") as f:
+        body = client.post(
+            "/api/layers/las?make_ortho=false",
+            files={"file": (p.name, f, "application/octet-stream")},
+        ).json()
+    lid = body["id"]
+    assert body.get("epsg") is None  # ヘッダ CRS なし
+
+    o1 = client.post(f"/api/layers/{lid}/ortho").json()  # 作業CRSのまま解釈
+    r = client.patch(f"/api/layers/{lid}/epsg?epsg=6675")  # 実は7系だったと後付け指定
+    assert r.status_code == 200
+    meta = client.get(f"/api/layers/{lid}").json()
+    assert meta["epsg"] == 6675 and meta["crs_source"] == "user"
+
+    o2 = client.post(f"/api/layers/{lid}/ortho").json()  # 指定後の再生成
+    # 7系→9系の再投影で経度が大きく変わる（zone VII 原点 137.17E vs zone IX 139.83E）
+    assert abs(o1["geographic_bounds"][0] - o2["geographic_bounds"][0]) > 1.0
+
+    cm = client.post(
+        "/api/costmap",
+        json={"las_layer_id": lid, "target_epsg": 6677, "params": {"grid_size_m": 1.0}},
+    ).json()
+    assert cm["las_src_epsg"] == 6675 and cm["las_crs_source"] == "specified"
+
+    # 指定解除 → ヘッダ/推定に戻る
+    r = client.patch(f"/api/layers/{lid}/epsg")
+    assert r.status_code == 200 and client.get(f"/api/layers/{lid}").json().get("epsg") is None
+    for i in (o1["id"], o2["id"], cm["id"], lid):
+        client.delete(f"/api/layers/{i}")

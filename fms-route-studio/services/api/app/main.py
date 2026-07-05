@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from .routers import agent, costmap, drivable, fleet, geo, layers, planning, projects, simulate, tiles, vehicles
+from .routers import agent, costmap, drivable, earthworks, fleet, geo, layers, planning, projects, simulate, tiles, vehicles
 from .settings import JGD2011_ZONES, get_working_epsg, set_working_epsg
 
 app = FastAPI(title="FMS Route Studio API", version="0.1.0")
@@ -54,3 +54,4 @@ app.include_router(simulate.router)
 app.include_router(projects.router)
 app.include_router(agent.router)
 app.include_router(fleet.router)
+app.include_router(earthworks.router)

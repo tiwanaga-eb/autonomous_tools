@@ -24,11 +24,16 @@ export interface Layer {
   filename?: string;
   cog?: string;
   epsg?: number;
-  crs_source?: "detected" | "assigned";
+  crs_source?: "detected" | "assigned" | "computed" | "user";
   width?: number;
   height?: number;
   bands?: number;
   geographic_bounds?: [number, number, number, number]; // [west, south, east, north]
+  // LAS→オルソ自動生成（las2ortho 内蔵化）
+  auto_ortho_id?: string;
+  ortho_error?: string;
+  source_las?: string; // 生成オルソの元 LAS
+  res_m?: number; // 生成オルソの解像度[m/px]
   // costmap 生成時のメタ
   density_pts_m2?: number;
   pts_per_cell?: number;
@@ -51,6 +56,7 @@ export interface TrajPoint {
   s: number;
   x: number;
   y: number;
+  z?: number | null; // 標高[m]（点群由来DSMからサンプル。DSM無し/範囲外は null）
   heading_deg: number;
   curvature: number;
   curvature_rate: number;
@@ -167,6 +173,7 @@ export interface SpotMetrics {
   n_switchbacks: number;
   min_clearance_m: number | null;
   approach_error_m: number;
+  approach_error_deg?: number | null; // 目標方位との到達誤差[°]（P-008 合否は safety 側）
   cost_integral: number;
   score: number;
   footprint_inside?: boolean | null;
@@ -191,15 +198,32 @@ export interface SpotResult {
   rho_m: number;
   method?: SpottingMethod;
   reason?: string | null;
+  note?: string | null; // 近似・制約の注記（例: スキッドステア車の Ackermann 近似計画）
   exit?: SpotResult | null;
   // 据え切り診断: 解決後の可否と、端点に入れた直線リードイン/アウト長[m]（0=据え切り）
   allow_stationary?: boolean;
   endpoint_margin_start_m?: number;
   endpoint_margin_goal_m?: number;
+  // 内部cusp(切り返し点)の実効直線マージン最小値[m]。null=内部cuspなし。~0=狭所で挿入不可（据え切り必要）
+  min_cusp_margin_m?: number | null;
   // 経路と同じ軌跡解析＋安全検証（寄り付きにも付与）
   trajectory?: Trajectory;
   analysis?: AnalysisResult;
   safety?: SafetyReport;
+}
+
+// 排土（パイル）配置計画（/api/earthworks/piles）
+export interface PilePlanResult {
+  pile: { height_m: number; radius_m: number; volume_m3: number; repose_deg: number };
+  centers: [number, number][];
+  count: number;
+  spacing: { dx_m: number; dy_m: number; stagger: boolean; stagger_invert?: boolean };
+  grid_angle_deg: number;
+  edge_margin_m: number;
+  area_m2: number;
+  total_volume_m3: number;
+  n_theory: number | null;           // 撒き出しモード時の理論数 ⌊A·t/V⌋
+  suggested_spacing_m: number | null; // 撒き出しモード時の推奨間隔 √(V/t)
 }
 
 export interface SafetyCheck {

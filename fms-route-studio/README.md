@@ -32,8 +32,18 @@ fms-route-studio/
 │   └── app/routers/   layers / costmap / drivable / geo(経路生成・解析) / simulate / fleet / vehicles / projects / agent（+ /api 直下に plan/tiles）
 ├── apps/web/                 # React+TS+Vite+Zustand（:5173）OpenLayers native 6677 + three.js 3D
 ├── scripts/scenario_report.py
-└── docs/SCENARIO_REPORT.md   # 鉱山/土木シナリオの自動チューニングレポート
+└── docs/                     # 要件定義書 / 設計書 / シナリオレポート（docs/README.md 参照）
 ```
+
+## ドキュメント
+
+| 文書 | 内容 |
+|---|---|
+| [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) | 要件定義書（StRS/SLQDC・SysRS/F·P·I·S·R・トレーサビリティ） |
+| [docs/DESIGN.md](docs/DESIGN.md) | 設計書（アーキテクチャ・アルゴリズム・API・データモデル・非機能） |
+| [docs/SCENARIO_REPORT.md](docs/SCENARIO_REPORT.md) | 鉱山/土木シナリオの自動チューニングレポート |
+
+要件定義は `unmanned-requirements` のメソドロジー（SLQDC / F·P·I·S·R / トレーサビリティ）に準拠し、ID は `FRS-` 接頭辞で採番、上位パッケージ AutonomousDumptruck（FMS 運航前工程 S-00）へトレースする。
 
 ## 主な機能
 
@@ -41,11 +51,12 @@ fms-route-studio/
 - **経路**: 4アルゴリズム＋自動(A*)、最小旋回半径(R_min)保証、Elastic Band洗練、フットプリント包含、進入禁止(NoGoZone)回避
 - **車両**: HD785/HD605/HM400/CD110R。寸法/運動学/速度/加速度/安全しきい値を画面で調整（可逆オーバーライド）
 - **寄り付き**: 切り返し0/1・必須後進・道幅・コスト関数（距離/時間/後進/切返/コスト）・退出軌道・不可理由・再生
-- **解析**: κ/dκ-ds/操舵/勾配/速度プロファイルのチャート、安全検証（配信可否＋不可理由）
+- **解析**: κ/dκ-ds/操舵/勾配/**標高**/速度プロファイルのチャート、安全検証（配信可否＋不可理由・寄り付き到達精度±0.5m/±5°）
+- **高さ(Z)埋め込み**: 点群由来DSMから経路各点に標高を自動付与（生成時）＋保存済みルートへの後付け（`POST /api/elevation/sample`）。CSV `z_m` 列・GeoJSON 3D座標・3D表示に反映
 - **3D**: LAS点群(RGB)/DSM地形メッシュ・道幅帯・経路/寄り付き
 - **マルチ車両（進行中）**: 複数台のルート競合検出・待避/追い越し・フリート走行シミュレーション（`planning_core/fleet`, `/api/fleet`）
 - **AIアシスタント**: マルチプロバイダ（Claude / Groq / OpenRouter / ローカルOllama）。tool-use で全工程を操作
-- **永続化/IO**: プロジェクト保存・CSV/GeoJSONエクスポート（速度プロファイル含む）
+- **永続化/IO**: プロジェクト保存（寄り付き詳細設定含む）・CSV/GeoJSONエクスポート（速度・標高z含む）
 
 ## 実行
 

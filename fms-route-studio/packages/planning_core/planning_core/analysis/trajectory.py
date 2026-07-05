@@ -102,11 +102,13 @@ def build_trajectory(
     grade_pct: np.ndarray | None = None,
     gears: list | None = None,
     min_speed_mps: float = 0.0,
+    z: np.ndarray | None = None,
 ) -> Trajectory:
     """Build a Trajectory (per-point s, heading, kappa, dkappa/ds, steer, grade) from a polyline.
 
     gears: 各点のギア("F"/"R")。寄り付き等の前後進つき経路で渡すと、速度プロファイルが
     切り返し(ギア変化)点で停止する。未指定なら全点同一ギア扱い。
+    z: 各点の標高[m]（点群由来 DSM のサンプル値。elevation_and_grade 参照）。NaN は None になる。
     """
     pts = np.asarray(pts, float)
     prof = curvature_profile(pts)
@@ -120,6 +122,9 @@ def build_trajectory(
     grades = None
     if grade_pct is not None:
         grades = np.asarray(grade_pct, float)
+    zs = None
+    if z is not None:
+        zs = np.asarray(z, float)
 
     # 切り返し点（gear対応）。直線マージンの折返し頂点で曲率が退化スパイクするため、cusp 点の
     # 曲率を 0 にしてから dκ/ds・速度・各指標を算出する（生スパイクの隣接波及・グラフ汚染を防ぐ）。
@@ -136,11 +141,15 @@ def build_trajectory(
         g = None
         if grades is not None and i < len(grades) and np.isfinite(grades[i]):
             g = float(grades[i])
+        zv = None
+        if zs is not None and i < len(zs) and np.isfinite(zs[i]):
+            zv = float(zs[i])
         points.append(
             TrajPoint(
                 s=float(s[i]),
                 x=float(pts[i, 0]),
                 y=float(pts[i, 1]),
+                z=zv,
                 heading_deg=float(head[i]),
                 curvature=float(kappa[i]),
                 curvature_rate=float(dk[i]),

@@ -41,11 +41,14 @@ class VehicleProfile(BaseModel):
     max_lateral_accel: float | None = None  # 運用上の許容横加速度[m/s^2]（荷こぼれしない。コーナー速度 v=sqrt(a/κ)）
     max_accel: float | None = None          # 最大加速度[m/s^2]（アクセル100%相当）
     max_decel: float | None = None          # 通常減速度[m/s^2]（快適減速・停止可能距離に使用）
+    max_decel_loaded: float | None = None   # 積載時の通常減速度[m/s^2]（未設定=max_decel。fleet の予約距離等は保守側=積載値で計算）
     accel_start: float | None = None        # 発進時加速度[m/s^2]（0〜10km/h の緩発進）
     decel_emergency: float | None = None    # 急制動減速度[m/s^2]（タイヤロックしない範囲の最大減速）
     lateral_accel_limit: float | None = None  # 横加速度の構造限界[m/s^2]（転倒/構造限界。運用上限ではない）
     # 速度依存の最大操舵速度 [(速度km/h, 最大操舵速度rad/s), ...]（高速ほど操舵を制限＝ジャーク抑制）
     steer_rate_profile: list[tuple[float, float]] | None = None
+    # 下り勾配上限は velocity_profile に grades（勾配配列）を渡した場合のみ有効。
+    # DSM 未読込（勾配不明）の計画では下りでも上限がかからない点に注意（DESIGN §2.7）。
     max_speed_downhill_empty: float | None = None   # 下り勾配での最大速度(空車)[m/s]
     max_speed_downhill_loaded: float | None = None  # 下り勾配での最大速度(積荷)[m/s]
 

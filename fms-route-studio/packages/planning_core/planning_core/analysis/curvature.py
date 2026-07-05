@@ -80,7 +80,16 @@ def cusp_mask(pts, cos_thresh: float = -0.7, window: int = 1) -> np.ndarray:
 
 
 def min_turning_radius(pts) -> float:
-    """Minimum turning radius along a polyline (inf for a straight line)."""
+    """Minimum turning radius along a polyline (inf for a straight line).
+
+    cusp(切り返し)点は3点外接円の曲率が見かけ上∞に化けるため評価から除外する
+    （build_trajectory の min_radius_m と整合。後進対応プランナ=hybrid/reeds_shepp/rrt* で重要）。
+    """
     prof = curvature_profile(pts)
-    kmax = float(np.max(np.abs(prof["kappa"]))) if len(prof["kappa"]) else 0.0
+    kappa = np.abs(np.asarray(prof["kappa"], float))
+    if not len(kappa):
+        return float("inf")
+    mask = cusp_mask(pts)
+    kappa[mask] = 0.0  # cusp を曲率評価から除外
+    kmax = float(np.max(kappa)) if len(kappa) else 0.0
     return (1.0 / kmax) if kmax > 1e-9 else float("inf")

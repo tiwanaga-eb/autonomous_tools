@@ -26,6 +26,8 @@ def test_spotting_forward_only_reaches_target():
     assert all(p["gear"] == "F" for p in res.points)
     assert res.approach_error_m < 0.5
     assert res.length_total > 0 and res.time_total > 0
+    # 一発到達精度の方位側（P-008 ±5° 判定の入力）も算出される
+    assert res.approach_error_deg is not None and res.approach_error_deg < 5.0
 
 
 def test_spotting_with_switchback_reaches_target():
@@ -128,6 +130,16 @@ def test_spotting_cusp_has_straight_margin():
     before = straight_run(range(ci - 1, -1, -1))   # cusp から前方(forward側)へ遡る
     after = straight_run(range(ci, len(pts)))       # cusp から後方(reverse側)へ進む
     assert before >= 2 and after >= 2  # 切り返し点の前後とも直線マージンがある
+    # 診断値: 実効 cusp マージンが指定 margin に対して妥当な範囲で報告される
+    assert res.min_cusp_margin_m is not None
+    assert res.min_cusp_margin_m >= margin * 0.5
+
+
+def test_spotting_min_cusp_margin_none_when_forward_only():
+    """内部 cusp が無い（前進のみ）経路では min_cusp_margin_m=None（診断対象外）。"""
+    res = plan_spotting((0.0, 0.0, 0.0), (40.0, 5.0, 0.0), rho=6.0, max_switchbacks=0)
+    assert res.n_switchbacks == 0
+    assert res.min_cusp_margin_m is None
 
 
 def test_spotting_switchback_zone_filters_cusp():
@@ -235,7 +247,9 @@ def test_spotting_method_selection():
     rs = plan_spotting(S, T, rho=5.0, max_switchbacks=1, method="reeds_shepp")
     dub = plan_spotting(S, T, rho=5.0, max_switchbacks=1, method="dubins")
     assert auto.feasible and rs.feasible and dub.feasible
-    assert rs.n_switchbacks == 1  # RS は曲がりながらの後進で切り返す
+    # RS は曲がりながらの後進で切り返す。据え切り回避（既定 deny）が両端直線化できる
+    # 2カスプ RS 変種を選ぶことがあるため 1〜2 を許容。
+    assert rs.n_switchbacks in (1, 2)
     # hybrid はマップ無しでは生成不可（明示状態）。
     hyb = plan_spotting(S, T, rho=5.0, max_switchbacks=1, method="hybrid_astar")
     assert hyb.status == "NO_HYBRID_MAP" and not hyb.feasible
@@ -275,7 +289,11 @@ def test_spotting_endpoint_overhang_ignored():
 
 
 def test_spotting_best_effort_minimizes_overhang():
-    """完全に収まる候補が無いとき、best-effort は『はみ出し率最小』の候補を返す。"""
+    """完全に収まる候補が無いとき、best-effort は『はみ出し率最小』の候補を返す。
+
+    注: 幅13mの旧シナリオは hybrid の footprint 対応（多点ターン）で解けるようになったため、
+    車体対角(8.7m)に対し回転余地の無い幅9.5mへ狭めて「真に不可」を維持する。
+    """
     cell = 0.5
     W, H = 100, 36
     t = Affine(cell, 0, 0, 0, -cell, 18.0)
@@ -284,9 +302,9 @@ def test_spotting_best_effort_minimizes_overhang():
     X = np.broadcast_to(cc, (H, W))
     Y = np.broadcast_to(rr, (H, W))
     mask = np.zeros((H, W), np.uint8)
-    mask[(X >= 2) & (X <= 38) & (Y >= 2) & (Y <= 15)] = 1  # 幅13m=この車では切り返し不可
+    mask[(X >= 2) & (X <= 38) & (Y >= 2) & (Y <= 11.5)] = 1  # 幅9.5m: 8×3.5m車は反転不可
     veh = _Veh(8.0, 3.5)
-    r = plan_spotting((6.0, 8.0, 0.0), (33.0, 8.0, math.pi), rho=6.0, max_switchbacks=1,
+    r = plan_spotting((6.0, 6.75, 0.0), (33.0, 6.75, math.pi), rho=6.0, max_switchbacks=1,
                       require_switchback=True, drivable_mask=mask, transform=t, vehicle=veh, step=0.4,
                       footprint_ignore_ends_m=0.6 * 8.0)
     assert not r.feasible
@@ -343,7 +361,10 @@ def test_spotting_cusp_yaw_continuous_with_smoothing():
         for c in cusps:
             a, b = pts[c - 1]["heading_deg"], pts[c]["heading_deg"]
             jump = abs((b - a + 180) % 360 - 180)
-            assert jump < 1.0, f"cusp idx={c} でヨー角が {jump:.1f}deg 飛んでいる"
+            # 直線マージンが入った cusp は連続（<1°）。狭所でマージン0の cusp は円弧接合の
+            # 離散接線差（~κ·step ≈ 2〜4°、停止点なので無害）が残るため 5° まで許容。
+            # 平滑化がマージンを曲げる回帰（~19°ジャンプ）はこの閾値でも検出できる。
+            assert jump < 5.0, f"cusp idx={c} でヨー角が {jump:.1f}deg 飛んでいる"
 
 
 def _endpoint_curvature(res):
@@ -386,3 +407,90 @@ def test_endpoint_stationary_steer_allowed_option():
     assert res.points
     ks, kg = _endpoint_curvature(res)
     assert ks > 0.5 / rho or kg > 0.5 / rho, (ks, kg)
+
+
+def test_spotting_narrow_corridor_multipoint_turn():
+    """狭いコリドー（帯）でも解ける: HM400 相当が幅18mの帯内で180°反転して寄り付く。
+
+    hybrid A* を footprint 対応＋細格子リトライ化し、カスプ直線マージンを「収まらないなら挿入
+    しない」へ倒した回帰。従来は幅32mでも FOOTPRINT_OUTSIDE で全滅していた。
+    """
+    from rasterio.transform import from_origin
+
+    from planning_core.vehicle.profiles import load_builtin
+
+    veh = load_builtin("HM400")
+    W, L, cell, pad = 18.0, 80.0, 0.5, 8.0
+    h = int(round((W + 2 * pad) / cell))
+    wpx = int(round((L + 2 * pad) / cell))
+    t = from_origin(-pad, W + pad, cell, cell)
+    mask = np.zeros((h, wpx), np.uint8)
+    r0, r1 = int(round(pad / cell)), int(round((pad + W) / cell))
+    c0, c1 = int(round(pad / cell)), int(round((pad + L) / cell))
+    mask[r0:r1, c0:c1] = 1
+
+    res = plan_spotting(
+        (10.0, W * 0.5, 0.0), (18.0, W * 0.5, math.pi), rho=veh.min_turning_radius,
+        max_switchbacks=1, drivable_mask=mask, transform=t, vehicle=veh,
+        footprint_ignore_ends_m=veh.overall_length * 0.6,
+    )
+    assert res.feasible and res.status == "OK", (res.status, res.fp_max_frac)
+    assert res.footprint_inside is True
+    assert res.n_switchbacks >= 2  # 狭所は多点ターン（複数切り返し）で解く
+    assert res.approach_error_m < 0.5
+
+
+def test_spotting_stationary_deny_differs_and_has_no_loops():
+    """据え切り 禁止/許可 で経路が変わる回帰（ユーザー報告「どちらでも同じパス」対応）。
+
+    横向きターゲット＝端点で円弧が要る配置。禁止では両端に直線リードが入り、
+    リード区間の方位ドリフトは ≤2°。旧実装の後付けスプライスはρループを作り
+    経路長が ~4.7倍に膨れていた → 1.6倍以内であることも検証。
+    """
+    from planning_core.vehicle.profiles import load_builtin
+
+    veh = load_builtin("HM400")
+    start, target = (0.0, 0.0, 0.0), (25.0, 12.0, math.radians(90))
+    allow = plan_spotting(start, target, rho=veh.min_turning_radius, max_switchbacks=1,
+                          vehicle=veh, allow_stationary_steer=True)
+    deny = plan_spotting(start, target, rho=veh.min_turning_radius, max_switchbacks=1,
+                         vehicle=veh, allow_stationary_steer=False)
+    assert allow.feasible and deny.feasible
+    assert deny.allow_stationary is False and allow.allow_stationary is True
+    assert deny.endpoint_margin_start_m > 0 and deny.endpoint_margin_goal_m > 0
+    assert deny.length_total < allow.length_total * 1.6  # ρループの大回りを作らない
+
+    # リード区間（端点直線）内は方位一定 = 停止中の据え切り不要
+    pts = deny.points
+    s = [p["s"] for p in pts]
+
+    def max_drift(idxs, lead):
+        h0 = pts[idxs[0]]["heading_deg"]
+        base = s[idxs[0]]
+        mx = 0.0
+        for i in idxs:
+            if abs(s[i] - base) > lead - 0.2:
+                break
+            mx = max(mx, abs((pts[i]["heading_deg"] - h0 + 180) % 360 - 180))
+        return mx
+
+    assert max_drift(range(len(pts)), deny.endpoint_margin_start_m) <= 2.0
+    assert max_drift(range(len(pts) - 1, -1, -1), deny.endpoint_margin_goal_m) <= 2.0
+
+
+def test_spotting_stage_candidates_reach_far_lateral_zone():
+    """横・遠方に離れた切り返しゾーンにも S 候補が置かれる（遠方粗シェルの検証）。
+
+    ゾーン中心は目標前方 6ρ × 横 2.5ρ ＝ 旧候補域（密格子 横±1.5ρ／リング距離4ρ）の外側。
+    旧実装ではゾーン内に cusp を持つ候補が生成されず NO_PATH になっていた。
+    """
+    rho = 6.0
+    start = (0.0, 0.0, 0.0)
+    target = (10.0, 0.0, 0.0)
+    cx, cy = 10.0 + 6.0 * rho, 2.5 * rho  # (46, 15)
+    zone = [(cx - 4.0, cy - 4.0), (cx + 5.0, cy - 4.0), (cx + 5.0, cy + 5.0), (cx - 4.0, cy + 5.0)]
+    res = plan_spotting(start, target, rho=rho, max_switchbacks=1, require_switchback=True,
+                        switchback_zone=zone)
+    assert res.n_switchbacks == 1, f"far-lateral zone should be reachable (status={res.status})"
+    for sx, sy in res.switch_points:
+        assert cx - 4.0 <= sx <= cx + 5.0 and cy - 4.0 <= sy <= cy + 5.0

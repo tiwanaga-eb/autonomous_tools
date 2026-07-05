@@ -2,11 +2,16 @@
 // レイヤはサーバ側レジストリで別管理のため含めない（読込後もレイヤはそのまま）。
 // v2: **経路ジオメトリ(route)も保存**し、再読込時にそのまま復元する（経路・エリアを保存→呼出→編集）。
 //     spotResult はレイヤ依存のクリアランス評価を含むため従来どおり保存しない。
+// v3: 寄り付きの詳細設定（手動切り返し点/切り返しゾーン/直線マージン/退出/コスト重み）も保存。
+//     従来はこれらが復元されず、再読込のたびに既定値へ戻っていた（データ損失）。
 
 import { pickLayer } from "@/layerSelect";
 import { useStore } from "@/store/useStore";
 
-const VERSION = 2;
+const VERSION = 3;
+
+// store の既定値と一致させる（applyProject で欠落時に使うフォールバック）
+const DEFAULT_SPOT_WEIGHTS = { w_distance: 1, w_time: 0, w_reverse: 1, w_switchback: 8, w_costmap: 2, w_turn: 6 };
 
 export function serializeProject(): Record<string, unknown> {
   const s = useStore.getState();
@@ -32,6 +37,7 @@ export function serializeProject(): Record<string, unknown> {
     allowReverse: s.allowReverse,
     refineElasticBand: s.refineElasticBand,
     showWaypoints: s.showWaypoints,
+    pointBudget: s.pointBudget,
     costOpacity: s.costOpacity,
     costVisible: s.costVisible,
     drivableOpacity: s.drivableOpacity,
@@ -45,6 +51,28 @@ export function serializeProject(): Record<string, unknown> {
     spotMinSpeedKmh: s.spotMinSpeedKmh,
     spotContainAreaId: s.spotContainAreaId,
     spotRoadWidthM: s.spotRoadWidthM,
+    // v3: 寄り付き詳細設定
+    spotSwitchPose: s.spotSwitchPose,
+    spotSwitchZoneId: s.spotSwitchZoneId,
+    spotCuspMargin: s.spotCuspMargin,
+    spotWithExit: s.spotWithExit,
+    spotExitGoal: s.spotExitGoal,
+    spotWeights: s.spotWeights,
+    // 排土（パイル）配置の設定と結果
+    pileAreaId: s.pileAreaId,
+    pileSizeMode: s.pileSizeMode,
+    pileVolumeM3: s.pileVolumeM3,
+    pileHeightM: s.pileHeightM,
+    pileReposeDeg: s.pileReposeDeg,
+    pilePlaceMode: s.pilePlaceMode,
+    pileDx: s.pileDx,
+    pileDy: s.pileDy,
+    pileStagger: s.pileStagger,
+    pileStaggerInv: s.pileStaggerInv,
+    pileSpreadT: s.pileSpreadT,
+    pileSpreadDx: s.pileSpreadDx,
+    pileEdgeMarginM: s.pileEdgeMarginM,
+    pilePlan: s.pilePlan,
   };
 }
 
@@ -68,8 +96,10 @@ export function applyProject(state: Record<string, unknown>): void {
   s.setSavedRoutes(g("savedRoutes", []) as never);
   s.setShowSavedRoutes(g("showSavedRoutes", true));
   s.setFleetConflicts(null);
+  // 待避所は保存経路に存在する routeId のみ復元（孤児を持ち込まない）。前プロジェクトの残留も置換で消す。
   const bays = g<Record<string, import("@/types/api").BayCfg>>("fleetBays", {});
-  Object.entries(bays).forEach(([rid, cfg]) => s.setFleetBay(rid, cfg));
+  const routeIds = new Set((g("savedRoutes", []) as { id: string }[]).map((r) => r.id));
+  s.setFleetBays(Object.fromEntries(Object.entries(bays).filter(([rid]) => routeIds.has(rid))));
   s.setVehicleId(g("vehicleId", null));
   s.setCostLayerId(g("costLayerId", null));
   s.setDrivableLayerId(g("drivableLayerId", null));
@@ -82,6 +112,7 @@ export function applyProject(state: Record<string, unknown>): void {
   s.setAllowReverse(g("allowReverse", false));
   s.setRefineElasticBand(g("refineElasticBand", false));
   s.setShowWaypoints(g("showWaypoints", true));
+  s.setPointBudget(g("pointBudget", 1_000_000));
   s.setCostOpacity(g("costOpacity", 0.6));
   s.setCostVisible(g("costVisible", true));
   s.setDrivableOpacity(g("drivableOpacity", 0.5));
@@ -95,4 +126,26 @@ export function applyProject(state: Record<string, unknown>): void {
   s.setSpotMinSpeedKmh(g("spotMinSpeedKmh", 0));
   s.setSpotContainAreaId(g("spotContainAreaId", null));
   s.setSpotRoadWidthM(g("spotRoadWidthM", 0));
+  // v3: 寄り付き詳細設定（v2 以前のプロジェクトは既定値に戻る）
+  s.setSpotSwitchPose(g("spotSwitchPose", null));
+  s.setSpotSwitchZoneId(g("spotSwitchZoneId", null));
+  s.setSpotCuspMargin(g("spotCuspMargin", 0));
+  s.setSpotWithExit(g("spotWithExit", false));
+  s.setSpotExitGoal(g("spotExitGoal", null));
+  s.setSpotWeights(g("spotWeights", DEFAULT_SPOT_WEIGHTS));
+  // 排土（パイル）配置
+  s.setPileAreaId(g("pileAreaId", null));
+  s.setPileSizeMode(g("pileSizeMode", "volume") as "volume" | "height");
+  s.setPileVolumeM3(g("pileVolumeM3", 24));
+  s.setPileHeightM(g("pileHeightM", 1.5));
+  s.setPileReposeDeg(g("pileReposeDeg", 37));
+  s.setPilePlaceMode(g("pilePlaceMode", "spacing") as "spacing" | "spread");
+  s.setPileDx(g("pileDx", 8));
+  s.setPileDy(g("pileDy", 0));
+  s.setPileStagger(g("pileStagger", false));
+  s.setPileStaggerInv(g("pileStaggerInv", false));
+  s.setPileSpreadT(g("pileSpreadT", 0.5));
+  s.setPileSpreadDx(g("pileSpreadDx", 0));
+  s.setPileEdgeMarginM(g("pileEdgeMarginM", -1));
+  s.setPilePlan(g("pilePlan", null));
 }

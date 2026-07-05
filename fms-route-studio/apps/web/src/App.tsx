@@ -12,6 +12,7 @@ import { DrivableAreaPanel } from "@/panels/DrivableAreaPanel";
 import { FleetPanel } from "@/panels/FleetPanel";
 import { IOPanel } from "@/panels/IOPanel";
 import { LayerPanel } from "@/panels/LayerPanel";
+import { PilePanel } from "@/panels/PilePanel";
 import { ProjectPanel } from "@/panels/ProjectPanel";
 import { RoutePanel } from "@/panels/RoutePanel";
 import { SpottingPanel } from "@/panels/SpottingPanel";
@@ -38,6 +39,7 @@ const FEATURES: Record<FeatureId, { title: string; render: () => JSX.Element }> 
   vehicle: { title: "車両パラメータ", render: () => <VehiclePanel /> },
   spotting: { title: "寄り付きシミュレータ", render: () => <SpottingPanel /> },
   areas: { title: "エリア", render: () => <AreaPanel /> },
+  piles: { title: "排土（パイル）配置", render: () => <PilePanel /> },
   fleet: { title: "複数台（経路の競合判定）", render: () => <FleetPanel /> },
   project: {
     title: "プロジェクト / 入出力",
@@ -66,6 +68,9 @@ export function App() {
   const setView3dMode = useStore((s) => s.setView3dMode);
   const pointSize = useStore((s) => s.pointSize);
   const setPointSize = useStore((s) => s.setPointSize);
+  const pointBudget = useStore((s) => s.pointBudget);
+  const setPointBudget = useStore((s) => s.setPointBudget);
+  const mode = useStore((s) => s.mode);
 
   useEffect(() => {
     api
@@ -94,6 +99,17 @@ export function App() {
         } else if (e.key === "Backspace") {
           e.preventDefault();
           dispatch({ type: "UNDO_POLY_VERTEX" });
+        }
+      }
+      // 計測中: Esc=クリアして終了 / Backspace=1点戻す
+      if (useStore.getState().mode === "measure") {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          useStore.getState().clearMeasure();
+          useStore.getState().setMode("pan");
+        } else if (e.key === "Backspace") {
+          e.preventDefault();
+          useStore.getState().undoMeasurePt();
         }
       }
     };
@@ -183,13 +199,50 @@ export function App() {
                 <input type="range" min={1} max={6} step={0.5} value={vExag} onChange={(e) => setVExag(+e.target.value)} />
               </label>
               {view3dMode === "points" && (
-                <label className="view-vexag" title="点サイズ">
-                  pt{pointSize.toFixed(1)}
-                  <input type="range" min={1} max={6} step={0.5} value={pointSize} onChange={(e) => setPointSize(+e.target.value)} />
-                </label>
+                <>
+                  <label className="view-vexag" title="点サイズ">
+                    pt{pointSize.toFixed(1)}
+                    <input type="range" min={1} max={6} step={0.5} value={pointSize} onChange={(e) => setPointSize(+e.target.value)} />
+                  </label>
+                  <label className="view-vexag" title="表示する点数の上限（多いほど密だが読込・描画が重くなる）">
+                    点数
+                    <select value={pointBudget} onChange={(e) => setPointBudget(+e.target.value)}>
+                      <option value={200_000}>20万</option>
+                      <option value={500_000}>50万</option>
+                      <option value={1_000_000}>100万</option>
+                      <option value={2_000_000}>200万</option>
+                      <option value={4_000_000}>400万</option>
+                      <option value={8_000_000}>800万</option>
+                      <option value={16_000_000}>1600万</option>
+                    </select>
+                  </label>
+                </>
               )}
             </>
           )}
+          {!view3d && (
+            <button
+              data-active={mode === "measure"}
+              onClick={() => {
+                const s = useStore.getState();
+                if (s.mode === "measure") {
+                  s.clearMeasure();
+                  s.setMode("pan");
+                } else {
+                  s.setMode("measure");
+                }
+              }}
+              title="距離・面積の計測。クリックで点を追加（2点以上=距離、3点以上=閉じた面積）。Backspace=1点戻す / Esc=終了"
+            >
+              📏 計測
+            </button>
+          )}
+          <button
+            onClick={() => window.dispatchEvent(new CustomEvent("frs:capture"))}
+            title="表示中のビュー（2D地図 / 3D）をPNG画像として保存"
+          >
+            📷 キャプチャ
+          </button>
         </div>
         {view3d ? <ThreeView /> : <MapView />}
         {busy && (

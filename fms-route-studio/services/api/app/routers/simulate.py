@@ -17,12 +17,12 @@ from pydantic import BaseModel, Field
 # 寄り付き候補生成アルゴリズム。auto=全手法をコスト比較 / 個別手法。
 SpottingMethod = Literal["auto", "dubins", "reeds_shepp", "hybrid_astar"]
 
-from planning_core.analysis import build_trajectory, grade_profile, summarize, verify_safety
-from planning_core.footprint import path_min_clearance
+from planning_core.orchestrator import analyze_polyline
 from planning_core.simulator import CostWeights, plan_spotting
 
 from .. import store
 from .. import vehicle_overrides
+from ..rasters import same_grid
 
 router = APIRouter(prefix="/api/simulate", tags=["simulate"])
 
@@ -55,7 +55,7 @@ class SpottingRequest(BaseModel):
     costmap_layer_id: str | None = None      # コスト関数用 cost マップ（未指定なら drivable 経由で解決）
     use_footprint: bool = True               # 車両 footprint_radius を要求クリアランスに
     road_width_m: float | None = None        # 道幅[m]（>0 で要求クリアランス=道幅/2、footprint_radius を上書き）
-    no_go_polygons: list[list[tuple[float, float]]] | None = None  # 進入禁止領域（world座標多角形）
+    no_go_polygons: list[list[tuple[float, float]]] | None = Field(None, max_length=128)  # 進入禁止領域（world座標多角形）
     with_exit: bool = False                  # 退出軌道も生成する（既定の行先は start）
     exit_goal: PoseIn | None = None          # 退出の行先 Goal 姿勢（指定時 target→exit_goal。未指定は target→start）
     manual_switch_pose: PoseIn | None = None  # 手動切り返し点（指定時は前進→S→後進のみ生成）
@@ -164,8 +164,9 @@ def spotting(req: SpottingRequest):
             mask = rfeat.rasterize([(geom, 1)], out_shape=(h, w), transform=transform, fill=0, dtype="uint8")
 
     # 防御: mask と cost は同一グリッド前提（hybrid A* 等が同じ transform で両者を参照する）。
-    # グリッドが食い違う場合は形状不一致(500)や誤参照を避けるため cost を無効化（封じ込めは維持）。
-    if mask is not None and cost is not None and cost.shape != mask.shape:
+    # shape に加え transform も照合（同サイズでも別ゾーン/別範囲なら誤参照になる）。
+    # 食い違う場合は cost を無効化して安全側で継続（封じ込め・mask 制約は維持）。
+    if mask is not None and cost is not None and not same_grid(transform, mask.shape, ctransform, cost.shape):
         cost = None
         obstacle = 1e9
 
@@ -222,6 +223,10 @@ def spotting(req: SpottingRequest):
     )
     out = _result_dict(res, rho, footprint)
     out["method"] = req.method
+    # スキッドステア車（CD110R 等）は専用プリミティブが無く Ackermann 近似で計画される。
+    # 保守的（Ackermann 追従可能ならスキッド車も可）だが、その場旋回は未活用 — UI に明示。
+    if veh is not None and getattr(veh, "kinematic_type", None) == "tracked_skid":
+        out["note"] = "スキッドステア車は Ackermann 近似で計画（保守的・その場旋回は未活用）"
     min_speed_mps = max(0.0, float(req.min_speed_kmh)) / 3.6
     _attach_analysis(out, res, veh, dsm, dsm_t, mask, transform, min_speed_mps)  # 経路と同じ軌跡解析＋安全検証
 
@@ -239,33 +244,27 @@ def spotting(req: SpottingRequest):
 
 
 def _attach_analysis(out: dict, res, veh, dsm, dsm_t, dmask, dtransform, min_speed_mps: float = 0.0) -> None:
-    """寄り付き経路にも経路と同じ軌跡解析(曲率/最小半径/操舵/勾配/速度)＋安全検証を付与する。
+    """寄り付き経路にも経路と同じ軌跡解析(曲率/最小半径/操舵/勾配/標高/速度)＋安全検証を付与する。
 
-    寄り付きは前後進(cusp)を含むため gear を渡して速度プロファイルを切り返しで停止させ、
-    cusp は曲率/操舵評価から自動除外される（build_trajectory/summarize と同じ扱い）。
+    共通後処理は orchestrator.analyze_polyline（/plan と同一実装）を共用。寄り付きは前後進(cusp)を
+    含むため gear を渡して速度プロファイルを切り返しで停止させ、cusp は曲率/操舵評価から自動除外
+    される。低速マニューバのため dκ/ds(操舵レート)は参考扱い（合否に効かせない）。
+    一発到達精度（P-008: 水平±0.5m・方位±5°）は合否チェックに含める。
     """
     pts = res.points
     if not pts or len(pts) < 2:
         return
     xy = np.array([[p["x"], p["y"]] for p in pts], float)
     gears = [p.get("gear") for p in pts]
-    grade = None
-    if dsm is not None and dsm_t is not None:
-        try:
-            s = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(xy[:, 0]), np.diff(xy[:, 1])))])
-            grade = grade_profile(xy, s, dsm, dsm_t)
-        except Exception:  # noqa: BLE001
-            grade = None
-    traj = build_trajectory(xy, vehicle=veh, grade_pct=grade, gears=gears, min_speed_mps=min_speed_mps)
-    result = summarize(traj, vehicle=veh, drivable_mask=dmask, transform=dtransform)
-    clearance_m = None
-    if dmask is not None and dtransform is not None:
-        try:
-            clearance_m, _ = path_min_clearance(xy, dmask, dtransform)
-        except Exception:  # noqa: BLE001
-            clearance_m = None
-    # 寄り付きは低速マニューバのため dκ/ds(操舵レート)は非拘束 → 参考扱い（合否に効かせない）。
-    safety = verify_safety(traj, result, veh, clearance_m=clearance_m, advisory_kinds=("kappa_rate",))
+    err_m = getattr(res, "approach_error_m", None)
+    traj, result, safety, _clearance, _warn = analyze_polyline(
+        xy, vehicle=veh, gears=gears,
+        dsm=dsm, dsm_transform=dsm_t,
+        drivable_mask=dmask, drivable_transform=dtransform,
+        min_speed_mps=min_speed_mps, advisory_kinds=("kappa_rate",),
+        approach_error_m=(err_m if err_m is not None and math.isfinite(err_m) else None),
+        approach_error_deg=getattr(res, "approach_error_deg", None),
+    )
     out["trajectory"] = traj.model_dump()
     out["analysis"] = result.model_dump()
     out["safety"] = safety.model_dump()
@@ -314,6 +313,7 @@ def _result_dict(res, rho: float, footprint: float) -> dict:
             "n_switchbacks": res.n_switchbacks,
             "min_clearance_m": _fin(res.min_clearance_m, 2),
             "approach_error_m": _fin(res.approach_error_m, 3),
+            "approach_error_deg": _fin(getattr(res, "approach_error_deg", None), 2),
             "cost_integral": _fin(res.cost_integral, 2),
             "score": _fin(res.score, 2),
             "footprint_inside": res.footprint_inside,
@@ -322,6 +322,7 @@ def _result_dict(res, rho: float, footprint: float) -> dict:
         "allow_stationary": getattr(res, "allow_stationary", True),
         "endpoint_margin_start_m": _fin(getattr(res, "endpoint_margin_start_m", 0.0), 2),
         "endpoint_margin_goal_m": _fin(getattr(res, "endpoint_margin_goal_m", 0.0), 2),
+        "min_cusp_margin_m": _fin(getattr(res, "min_cusp_margin_m", None), 2),
         "feasible": res.feasible,
         "status": res.status,
         "reason": _reason(res, footprint),

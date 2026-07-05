@@ -26,13 +26,13 @@ router = APIRouter(prefix="/api/fleet", tags=["fleet"])
 
 class RouteIn(BaseModel):
     name: str | None = None
-    points: list[tuple[float, float]]          # 経路中心線 [(x,y), ...]（作業CRS・m）
+    points: list[tuple[float, float]] = Field(..., max_length=200_000)  # 経路中心線 [(x,y), ...]（作業CRS・m）
     vehicle_id: str | None = None              # 車幅/2 を半幅に使う
     half_width_m: float | None = None          # 明示半幅[m]（vehicle_id より優先）
 
 
 class ConflictRequest(BaseModel):
-    routes: list[RouteIn]
+    routes: list[RouteIn] = Field(..., max_length=64)  # 同時判定する経路数の上限
     cell_m: float = 0.5                        # 判定ラスタ解像度[m]
     clearance_m: float = Field(0.0, ge=0.0)    # 車車間の追加余裕[m]（半幅に上乗せ）
 
@@ -78,7 +78,7 @@ class BayIn(BaseModel):
 
 
 class JunctionRequest(BaseModel):
-    points: list[tuple[float, float]]   # 親経路中心線
+    points: list[tuple[float, float]] = Field(..., max_length=200_000)  # 親経路中心線
     s_frac: float = 0.5                 # 分岐起点の弧長割合 0..1
 
 
@@ -97,7 +97,7 @@ class SimRouteIn(RouteIn):
 
 
 class SimRequest(BaseModel):
-    routes: list[SimRouteIn]
+    routes: list[SimRouteIn] = Field(..., max_length=64)
     dt_s: float = Field(0.2, gt=0.0)
     gap_m: float = Field(2.0, ge=0.0)      # 占有区間手前の停止マージン[m]
     clearance_m: float = Field(0.0, ge=0.0)
@@ -114,7 +114,9 @@ def _sim_vehicle(r: SimRouteIn) -> SimVehicle:
             v = vehicle_overrides.resolve(r.vehicle_id)
             v_max = float(v.max_speed_fwd or 5.0)
             accel = float(getattr(v, "max_accel", None) or 0.5)
-            decel = float(getattr(v, "max_decel", None) or 1.0)
+            # 減速度は保守側=積載時値を採用する。予約距離 v²/(2·decel) が空車値だと
+            # 積載車で制動距離が伸びた際に Mutex ゾーンが過小になり停止しきれないため。
+            decel = float(getattr(v, "max_decel_loaded", None) or getattr(v, "max_decel", None) or 1.0)
             hl = float(getattr(v, "overall_length", None) or 6.0) / 2.0
         except FileNotFoundError:
             pass

@@ -68,3 +68,14 @@ def test_override_propagates_to_planning():
         _reset("HD785")
     assert r_def is not None and r_ovr is not None
     assert r_ovr > r_def + 3.0  # 半径上限を上げた分、経路の旋回半径が大きくなる
+
+
+def test_fleet_sim_vehicle_uses_loaded_decel():
+    """fleet sim の車両は保守側（積載時）減速度で構築される（予約距離の過小防止）。"""
+    from app.routers.fleet import SimRouteIn, _sim_vehicle
+    from planning_core.vehicle import load_builtin
+
+    prof = load_builtin("HM400")
+    sv = _sim_vehicle(SimRouteIn(id="r1", points=[[0.0, 0.0], [50.0, 0.0]], vehicle_id="HM400"))
+    assert sv.decel == prof.max_decel_loaded
+    assert sv.decel < prof.max_decel  # 空車値より必ず保守側

@@ -57,6 +57,8 @@ def velocity_profile(s, kappa, gears, vehicle, grades=None, min_speed_mps: float
         # 操舵レート制限は「実応答長(~1.5m)にわたる曲率変化率」で律速すべき。Dubins/RSのC-S接合の
         # 段差は細かいサンプリングだと巨大スパイク化し、数点だけ速度が急落する（離散化由来）。
         # dκ/ds を**弧長1.5m窓**で平滑化（非一様サンプリングに頑健）し、過減速を防ぐ（持続的な高dκ/dsは保持）。
+        # 注: 数値微分の κ はノイズで過制約になり得るため、可能な経路では解析曲率
+        # （curvature_source="analytic"、区分一定κ）を上流で優先している（DESIGN §2.7）。
         span = float(s_safe[-1] - s_safe[0])
         if span > 2.0:
             grid_ds = 0.1
@@ -73,10 +75,24 @@ def velocity_profile(s, kappa, gears, vehicle, grades=None, min_speed_mps: float
         rate = np.array([float(p[1]) for p in prof])  # rad/s
         order = np.argsort(spd)
         spd, rate = spd[order], rate[order]
-        for _ in range(2):
-            sr = np.interp(v * 3.6, spd, rate)  # 現速度での最大操舵速度
-            v_steer = sr * (1.0 + (L * k) ** 2) / (L * np.maximum(dk, 1e-9))
-            v = np.minimum(v, v_steer)
+        # 満たすべき条件は「v ≤ sr(v)·gain」（sr は速度に単調減少 → 交点は一意）。
+        # 旧実装の v←min(v, sr(v)·gain) の反復は、初回の高速側 sr（小さい）による過小評価から
+        # 回復できず、dκ/ds の高い区間で真の限界より 2〜3 倍遅い値に固着していた。
+        # 二分法で「条件を満たす最大の v」を点ごとに厳密に解く（返す v は条件を満たす側＝保守側）。
+        gain = (1.0 + (L * k) ** 2) / (L * np.maximum(dk, 1e-9))
+
+        def _sr(vv: np.ndarray) -> np.ndarray:
+            return np.interp(vv * 3.6, spd, rate)
+
+        ok_at_cap = v <= _sr(v) * gain          # 他制約の上限のままで操舵が追従できる点はそのまま
+        lo = np.zeros(n)
+        hi = v.copy()
+        for _ in range(28):
+            mid = 0.5 * (lo + hi)
+            ok = mid <= _sr(mid) * gain
+            lo = np.where(ok, mid, lo)
+            hi = np.where(ok, hi, mid)
+        v = np.where(ok_at_cap, v, lo)
 
     # 最低速度フロア（出発/到着/切返「付近以外」）: 内部点を min_speed 以上に引き上げる。
     # 端点・切返は次で0にし、その近傍は後段の加減速パスが 0→floor へランプ＝「付近」だけ低速。

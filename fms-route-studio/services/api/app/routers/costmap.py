@@ -24,7 +24,7 @@ from rio_tiler.io import Reader
 
 from planning_core.costmap import build_costmap_arrays, cost_to_rgba
 from planning_core.geometry import project
-from planning_core.io import read_las_xyz
+from planning_core.io import read_las_xyz, resolve_las_epsg
 from planning_core.models import CostmapParams
 
 from .. import store
@@ -121,7 +121,15 @@ def generate_costmap(req: CostmapRequest):
     if x.size == 0:
         raise HTTPException(422, "LAS has no points")
 
-    src_epsg = req.src_epsg or header_epsg or req.target_epsg
+    # LAS の CRS 解決: リクエスト明示指定 > レイヤメタ（PATCH /epsg のユーザー指定 or
+    # アップロード時ヘッダ検出）> ヘッダ > 経緯度ヒューリスティック > 作業ゾーン（そのまま）。
+    # 規則は planning_core.io.resolve_las_epsg に一元化（点群3D表示と同一）。
+    src_epsg, las_crs_source = resolve_las_epsg(
+        header_epsg, x, y, override=(req.src_epsg or las.get("epsg")), fallback=req.target_epsg
+    )
+    crs_note: str | None = None
+    if las_crs_source == "assumed_wgs84":
+        crs_note = "LASヘッダにCRSが無いため経緯度(WGS84)と推定して再投影しました。違う場合は「LASのCRS」を指定して再生成してください。"
     if int(src_epsg) != int(req.target_epsg):
         xy = project(np.column_stack([x, y]), int(src_epsg), int(req.target_epsg))
         x, y = xy[:, 0], xy[:, 1]
@@ -140,6 +148,8 @@ def generate_costmap(req: CostmapRequest):
             f" 実用解像度は約 {recommended_grid}m。grid>={recommended_grid}m を推奨"
             f"（細かいgridでは cost が補間アーティファクトになり信頼できません）。"
         )
+    if crs_note:
+        warning = f"{warning} / {crs_note}" if warning else crs_note
 
     out = build_costmap_arrays(x, y, z, req.params)
     cost = out["cost"]
@@ -178,6 +188,8 @@ def generate_costmap(req: CostmapRequest):
         "dsm_cog": dsm_cog,          # 勾配解析の入力（§10）
         "epsg": int(req.target_epsg),
         "crs_source": "computed",
+        "las_src_epsg": int(src_epsg),        # LAS座標をどのCRSとして読んだか
+        "las_crs_source": las_crs_source,     # specified / header / assumed_wgs84 / assumed_working
         "width": int(cost.shape[1]),
         "height": int(cost.shape[0]),
         "bands": 4,

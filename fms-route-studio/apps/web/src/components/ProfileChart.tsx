@@ -18,6 +18,7 @@ interface Props {
   limitLabel?: string;
   bands?: ProfileBand[]; // violation 区間ハイライト（任意）
   fmt?: (v: number) => string; // 値の表示フォーマット
+  hoverExtra?: (v: number) => string | null; // ホバー値の併記（例: κ→半径R[m], m/s→km/h）。軸には出さない
   height?: number;
   hoverIndex?: number | null; // 外部から制御されるホバー点index（全チャート/地図で共有）
   onHover?: (i: number | null) => void; // ホバー点index通知（地図ハイライト同期用）
@@ -44,6 +45,7 @@ export function ProfileChart({
   limitLabel,
   bands = [],
   fmt = niceFmt,
+  hoverExtra,
   height = 96,
   hoverIndex = null,
   onHover,
@@ -134,7 +136,11 @@ export function ProfileChart({
         <span style={{ color }}>{title}</span>
         <span className="profile-sub">
           {hoverI != null
-            ? `s=${xs[hoverI].toFixed(1)}m  ${fmt(ys[hoverI])} ${unit}`
+            ? `s=${xs[hoverI].toFixed(1)}m  ${fmt(ys[hoverI])} ${unit}` +
+              (() => {
+                const ex = Number.isFinite(ys[hoverI]) ? hoverExtra?.(ys[hoverI]) : null;
+                return ex ? `（${ex}）` : "";
+              })()
             : `max ${fmt(yMax)} / min ${fmt(yMin)} ${unit}`}
         </span>
       </div>

@@ -123,6 +123,49 @@ def _read_las_chunked(
     return x, y, z, rgb, epsg
 
 
+def las_header_epsg(path: str | Path) -> int | None:
+    """LAS ヘッダの CRS(EPSG) だけを読む（点データは読まない＝軽量。無ければ None）。"""
+    try:
+        with laspy.open(str(path)) as reader:
+            return _parse_epsg(reader.header)
+    except Exception:
+        return None
+
+
+def looks_like_lonlat(x: np.ndarray, y: np.ndarray) -> bool:
+    """全点が経緯度らしき範囲（|x|<=180 ∧ |y|<=90）か。
+
+    WGS84 の LAS はヘッダ CRS が欠落していることが多く、メートル座標として扱うと壊れる。
+    投影座標（平面直角/UTM）でこの範囲に全点が収まることは実質ないため、安全な推定。
+    """
+    if x.size == 0:
+        return False
+    return float(np.abs(x).max()) <= 180.0 and float(np.abs(y).max()) <= 90.0
+
+
+def resolve_las_epsg(
+    header_epsg: int | None,
+    x: np.ndarray,
+    y: np.ndarray,
+    *,
+    override: int | None = None,
+    fallback: int | None = None,
+) -> tuple[int | None, str]:
+    """LAS の CRS を一貫した優先順位で解決する（アップロード/コストマップ/点群表示で共通）。
+
+    優先順位: 明示指定(override) > ヘッダ > 経緯度ヒューリスティック(4326) > fallback。
+    返値 (epsg|None, source)。source は "specified" | "header" | "assumed_wgs84" | "assumed_working"。
+    fallback=None のときの assumed_working は「作業CRSのまま扱う（変換不要）」を意味する。
+    """
+    if override:
+        return int(override), "specified"
+    if header_epsg:
+        return int(header_epsg), "header"
+    if looks_like_lonlat(np.asarray(x), np.asarray(y)):
+        return 4326, "assumed_wgs84"
+    return (int(fallback) if fallback else None), "assumed_working"
+
+
 def read_las_xyz(
     path: str | Path,
     max_points: int | None = DEFAULT_MAX_POINTS,

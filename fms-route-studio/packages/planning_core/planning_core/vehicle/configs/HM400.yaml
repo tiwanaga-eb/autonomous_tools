@@ -1,6 +1,8 @@
 # Komatsu HM400 — アーティキュレート(中折れ)ダンプ（約40t級）
 # 実値ベース（PathGenerator/vehicle_configs/HM400-5.yaml 由来）。
 # v1 は自転車近似で運用（wheel_base/min_turning_radius は近似値）。
+#   注意: 剛体近似のため屈折による後部オフトラッキング（内輪差/外輪はみ出し）を持たない。
+#   旋回包絡の誤差 ~5-15% 見込み。狭所判定は矩形フットプリントの保守性に依存（DESIGN §2.7）。
 # v2 で中折れ運動学を厳密化（front_length/rear_length/max_articulation_angle, 残課題3）。
 id: HM400
 name: Komatsu HM400-5
@@ -50,6 +52,7 @@ min_clearance_m: 0.5
 max_lateral_accel: 0.98        # e-1 運用上の許容横加速度（0.1G, 荷こぼれしない範囲。コーナー速度に使用）
 max_accel: 0.66                # b 最大加速度（アクセル100%相当, 0.067G, 5km/h〜）
 max_decel: 0.49                # c 通常減速度（0.05G, 快適減速）
+max_decel_loaded: 0.25         # c' 積載時の通常減速度（暫定: 空車比~50%。fleet予約距離は保守側=本値を使用）
 accel_start: 0.35              # a 発進時加速度（0〜10km/h, 0.036G）
 decel_emergency: 2.94          # d 急制動減速度（0.3G, タイヤロックしない範囲）
 lateral_accel_limit: 2.45      # e-2 横加速度の構造限界（0.25G, 積荷時に転倒/構造限界）

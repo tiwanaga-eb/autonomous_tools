@@ -6,7 +6,9 @@ import { dispatch } from "@/commandBus";
 import { pickLayer } from "@/layerSelect";
 import { useStore } from "@/store/useStore";
 import type { EditMode } from "@/store/useStore";
-import type { Vehicle } from "@/types/api";
+import type { Trajectory, Vehicle } from "@/types/api";
+import { errMessage, runBusy } from "@/ui/busy";
+import { NumberField } from "@/ui/NumberField";
 
 const MODES: { mode: EditMode; label: string }[] = [
   { mode: "start", label: "Start" },
@@ -82,6 +84,53 @@ export function RoutePanel() {
   }
   function deleteSavedRoute(id: string) {
     setSavedRoutes(savedRoutes.filter((r) => r.id !== id));
+    useStore.getState().setFleetBay(id, null); // 紐づく待避所設定も削除（孤児化防止）
+  }
+
+  // 高さ(Z)埋め込み: 現在の経路＋保存済み経路の各点に、点群由来 DSM の標高を後付けサンプリング。
+  // （経路生成時にコストマップ(DSM)があれば自動で z が付くが、後からデータを読み込んだ場合や
+  //  旧プロジェクトの保存経路にはこのボタンで付与する）
+  async function embedHeights() {
+    const st = useStore.getState();
+    if (!st.route && st.savedRoutes.length === 0) {
+      setStatus("経路がありません（先に経路を生成または読込してください）", "warn");
+      return;
+    }
+    await runBusy(
+      "高さ(Z)を埋め込み中…",
+      async () => {
+        const cl = pickLayer(st.layers, "cost", st.costLayerId);
+        let missing = 0;
+        let done = 0;
+        const embed = async (traj: Trajectory): Promise<Trajectory> => {
+          const pts = traj.points.map((p) => [p.x, p.y] as [number, number]);
+          const res = await api.elevationSample(pts, cl?.id ?? null);
+          missing += res.n_missing;
+          done += 1;
+          return { ...traj, points: traj.points.map((p, i) => ({ ...p, z: res.z[i] ?? null })) };
+        };
+        if (st.route) {
+          const t = await embed(st.route.trajectory);
+          dispatch({ type: "SET_ROUTE", route: { ...st.route, trajectory: t } });
+        }
+        if (st.savedRoutes.length) {
+          const updated = [];
+          for (const sr of st.savedRoutes) {
+            if ((sr.route?.trajectory?.points?.length ?? 0) >= 1) {
+              updated.push({ ...sr, route: { ...sr.route, trajectory: await embed(sr.route.trajectory) } });
+            } else {
+              updated.push(sr);
+            }
+          }
+          setSavedRoutes(updated);
+        }
+        setStatus(
+          `高さを埋め込みました（${done}本${missing ? ` / DSM範囲外 ${missing}点` : ""}）。CSV/GeoJSON/3D 表示に反映されます`,
+          "success",
+        );
+      },
+      { failPrefix: "高さ埋め込みに失敗" },
+    );
   }
 
   // 分岐(交差点): 保存経路上の点(s_frac)を起点姿勢(親の接線)にして、そこから枝経路を計画する。
@@ -94,20 +143,22 @@ export function RoutePanel() {
       setStatus("分岐元の保存経路を選んでください（2点以上）", "warn");
       return;
     }
-    try {
-      const j = await api.fleetJunction(pts, branchFrac);
-      useStore.getState().setWaypoints([
-        { id: crypto.randomUUID(), role: "start", xy: { x: j.x, y: j.y }, heading_deg: j.heading_deg },
-      ]);
-      dispatch({ type: "SET_ROUTE", route: null });
-      setStatus(
-        `分岐起点を設定：${sr.name} の ${Math.round(branchFrac * 100)}% / 方位 ${j.heading_deg.toFixed(0)}°。` +
-        "地図でゴールを追加→経路生成→「現在の経路を保存」でライブラリ（複数台）へ。",
-        "success",
-      );
-    } catch (e) {
-      setStatus(`分岐起点の取得に失敗: ${String(e)}`, "error");
-    }
+    await runBusy(
+      "分岐起点を計算中…",
+      async () => {
+        const j = await api.fleetJunction(pts, branchFrac);
+        useStore.getState().setWaypoints([
+          { id: crypto.randomUUID(), role: "start", xy: { x: j.x, y: j.y }, heading_deg: j.heading_deg },
+        ]);
+        dispatch({ type: "SET_ROUTE", route: null });
+        setStatus(
+          `分岐起点を設定：${sr.name} の ${Math.round(branchFrac * 100)}% / 方位 ${j.heading_deg.toFixed(0)}°。` +
+          "地図でゴールを追加→経路生成→「現在の経路を保存」でライブラリ（複数台）へ。",
+          "success",
+        );
+      },
+      { failPrefix: "分岐起点の取得に失敗" },
+    );
   }
 
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
@@ -163,7 +214,7 @@ export function RoutePanel() {
         res.warning || (res.safety && !res.safety.passed) ? "warn" : "success",
       );
     } catch (e) {
-      setStatus(`経路生成に失敗: ${String(e)}`, "error");
+      setStatus(`経路生成に失敗: ${errMessage(e)}`, "error");
     } finally {
       useStore.getState().setBusy(false);
     }
@@ -233,17 +284,17 @@ export function RoutePanel() {
       </div>
       <div className="grid2">
         <label>
-          spacing (m)
-          <input type="number" step="0.5" min="0.1" value={routeSpacing} onChange={(e) => setRouteSpacing(+e.target.value)} />
+          点間隔 (m)
+          <NumberField value={routeSpacing} onCommit={setRouteSpacing} step={0.5} min={0.1} max={50} />
         </label>
         <label title="0 のときは選択車両の車幅で道幅帯を表示。>0 で A* が領域内に確保する道幅にもなる">
           道幅 (m)（0=車幅で表示）
-          <input type="number" step="0.5" min="0" value={roadWidthM} onChange={(e) => setRoadWidthM(+e.target.value)} />
+          <NumberField value={roadWidthM} onCommit={setRoadWidthM} step={0.5} min={0} max={100} />
         </label>
       </div>
       <label className="slider" style={{ flexDirection: "row", gap: 6, alignItems: "center" }}>
         <input type="checkbox" checked={showWaypoints} onChange={(e) => setShowWaypoints(e.target.checked)} />
-        <span>show waypoints (点)</span>
+        <span>経路点を表示</span>
       </label>
       {effAlgo === "hybrid_astar" && (
         <>
@@ -288,6 +339,15 @@ export function RoutePanel() {
             style={{ flex: 1 }}
           />
           <button onClick={saveCurrentRoute} disabled={!route}>現在の経路を保存</button>
+        </div>
+        <div className="row" style={{ marginTop: 4 }}>
+          <button
+            onClick={embedHeights}
+            disabled={busy || (!route && savedRoutes.length === 0)}
+            title="点群から生成した DSM の標高を、現在の経路と保存済み経路の各点にサンプリングして z として埋め込みます（CSV/GeoJSON/3D 表示に反映）"
+          >
+            高さ(Z)を埋め込む（点群DSM）
+          </button>
         </div>
         {savedRoutes.length > 0 && (
           <ul className="list" style={{ marginTop: 6 }}>

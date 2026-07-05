@@ -8,41 +8,62 @@ import type {
   XY,
 } from "@/types/api";
 
-async function jget<T>(url: string): Promise<T> {
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-  return (await r.json()) as T;
+// API エラー。FastAPI の {detail: ...} を人間可読メッセージへ整形し、status/detail も保持する。
+export class ApiError extends Error {
+  readonly status: number;
+  readonly detail: unknown;
+  constructor(status: number, message: string, detail: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
 }
 
-async function jpost<T>(url: string, body: unknown): Promise<T> {
-  const r = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-  return (await r.json()) as T;
+async function toApiError(r: Response): Promise<ApiError> {
+  const raw = await r.text().catch(() => "");
+  let detail: unknown = raw;
+  let msg = raw;
+  try {
+    const j = JSON.parse(raw);
+    if (j && typeof j === "object" && "detail" in j) {
+      detail = (j as { detail: unknown }).detail;
+      if (typeof detail === "string") msg = detail;
+      else if (Array.isArray(detail))
+        msg = detail.map((d) => (d && typeof d === "object" && "msg" in d ? String((d as { msg: unknown }).msg) : JSON.stringify(d))).join("; ");
+      else msg = JSON.stringify(detail);
+    }
+  } catch {
+    /* not JSON — raw text のまま */
+  }
+  return new ApiError(r.status, msg || `HTTP ${r.status}`, detail);
 }
 
-async function jpatch<T>(url: string, body: unknown): Promise<T> {
-  const r = await fetch(url, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-  return (await r.json()) as T;
+interface ReqOpts {
+  body?: unknown;
+  signal?: AbortSignal;
 }
 
-async function jput<T>(url: string, body: unknown): Promise<T> {
-  const r = await fetch(url, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-  return (await r.json()) as T;
+// 全 JSON リクエストの単一入口。r.ok 検査・detail 整形・空ボディ(204)・abort を一元化。
+async function request<T>(method: string, url: string, opts: ReqOpts = {}): Promise<T> {
+  const init: RequestInit = { method, signal: opts.signal };
+  if (opts.body !== undefined) {
+    init.headers = { "Content-Type": "application/json" };
+    init.body = JSON.stringify(opts.body);
+  }
+  const r = await fetch(url, init);
+  if (!r.ok) throw await toApiError(r);
+  if (r.status === 204) return undefined as T;
+  const text = await r.text();
+  return (text ? JSON.parse(text) : undefined) as T;
 }
+
+const jget = <T>(url: string, signal?: AbortSignal): Promise<T> => request<T>("GET", url, { signal });
+const jpost = <T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> =>
+  request<T>("POST", url, { body, signal });
+const jpatch = <T>(url: string, body: unknown): Promise<T> => request<T>("PATCH", url, { body });
+const jput = <T>(url: string, body: unknown): Promise<T> => request<T>("PUT", url, { body });
+const jdelete = (url: string): Promise<void> => request<void>("DELETE", url);
 
 export interface DrivableParams {
   threshold: number;
@@ -58,6 +79,44 @@ export interface DrivableParams {
 
 export type PlanMode = "auto" | "waypoint_guided";
 export type Algorithm = "spline" | "dubins" | "grid_astar" | "hybrid_astar" | "reeds_shepp" | "rrt_star";
+
+// 3D 点群（/points.bin のバイナリを展開したもの）。x/y/z は origin 相対 [m]。
+export interface PointCloud {
+  n: number;
+  origin: [number, number, number];
+  x: Float32Array;
+  y: Float32Array;
+  z: Float32Array;
+  rgb: Uint8Array | null; // n*3, 0-255
+  zmin: number;
+  zmax: number;
+}
+
+/** /points.bin のバイナリレイアウトを PointCloud に展開する（layers.py と対）。 */
+export function parsePointsBin(buf: ArrayBuffer): PointCloud {
+  const dv = new DataView(buf);
+  const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
+  if (magic !== "FRSP" || dv.getUint8(4) !== 1) throw new Error("点群バイナリの形式が不正です");
+  const hasRgb = dv.getUint8(5) === 1;
+  const n = dv.getUint32(8, true);
+  const ox = dv.getFloat64(12, true);
+  const oy = dv.getFloat64(20, true);
+  const oz = dv.getFloat64(28, true);
+  const zmin = dv.getFloat64(36, true);
+  const zmax = dv.getFloat64(44, true);
+  const off = 52;
+  if (buf.byteLength < off + 12 * n + (hasRgb ? 3 * n : 0)) throw new Error("点群バイナリが途中で切れています");
+  return {
+    n,
+    origin: [ox, oy, oz],
+    x: new Float32Array(buf, off, n),
+    y: new Float32Array(buf, off + 4 * n, n),
+    z: new Float32Array(buf, off + 8 * n, n),
+    rgb: hasRgb ? new Uint8Array(buf, off + 12 * n, 3 * n) : null,
+    zmin,
+    zmax,
+  };
+}
 
 // AI アシスタント（§14）。サーバの tool-use が返す「操作」を FE が適用する。
 export interface AgentAction {
@@ -104,15 +163,26 @@ export const api = {
 
   listLayers: () => jget<{ layers: Layer[] }>("/api/layers").then((d) => d.layers),
 
-  async uploadLayer(kind: string, file: File): Promise<Layer> {
+  async uploadLayer(kind: string, file: File, opts?: { makeOrtho?: boolean; srcEpsg?: number | null }): Promise<Layer> {
     const fd = new FormData();
     fd.append("file", file);
-    const r = await fetch(`/api/layers/${kind}`, { method: "POST", body: fd });
-    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    const q = new URLSearchParams();
+    if (opts?.makeOrtho != null) q.set("make_ortho", String(opts.makeOrtho));
+    if (opts?.srcEpsg) q.set("src_epsg", String(opts.srcEpsg));
+    const qs = q.toString();
+    const r = await fetch(`/api/layers/${kind}${qs ? `?${qs}` : ""}`, { method: "POST", body: fd });
+    if (!r.ok) throw await toApiError(r);
     return (await r.json()) as Layer;
   },
 
-  deleteLayer: (id: string) => fetch(`/api/layers/${id}`, { method: "DELETE" }),
+  deleteLayer: (id: string) => jdelete(`/api/layers/${id}`),
+
+  // LAS の座標系を後付け指定（ヘッダ CRS 欠落の現場 LAS 向け。null で解除）
+  setLayerEpsg: (id: string, epsg: number | null) =>
+    request<Layer>("PATCH", `/api/layers/${id}/epsg${epsg ? `?epsg=${epsg}` : ""}`),
+  // LAS からオルソを（再）生成（res 省略で点密度から自動）
+  makeOrthoFromLas: (id: string, res?: number) =>
+    jpost<Layer>(`/api/layers/${id}/ortho${res ? `?res=${res}` : ""}`, undefined),
 
   tileUrlTemplate: (id: string) => `/api/tiles/${id}/{z}/{x}/{y}.png`,
   previewUrl: (id: string) => `/api/layers/${id}/preview.png`,
@@ -125,9 +195,8 @@ export const api = {
   editDrivable: (id: string, op: "include" | "exclude", polygon: [number, number][]) =>
     jpatch<Layer>(`/api/drivable/${id}`, { op, polygon }),
   deleteDrivableEdit: (id: string, index: number) =>
-    fetch(`/api/drivable/${id}/edits/${index}`, { method: "DELETE" }).then((r) => r.json() as Promise<Layer>),
-  clearDrivableEdits: (id: string) =>
-    fetch(`/api/drivable/${id}/edits`, { method: "DELETE" }).then((r) => r.json() as Promise<Layer>),
+    request<Layer>("DELETE", `/api/drivable/${id}/edits/${index}`),
+  clearDrivableEdits: (id: string) => request<Layer>("DELETE", `/api/drivable/${id}/edits`),
 
   transform: (points: [number, number][], srcEpsg: number, dstEpsg: number) =>
     jpost<{ points: [number, number][] }>("/api/geo/transform", {
@@ -148,6 +217,14 @@ export const api = {
   analyze: (body: { points: XY[]; vehicle_id?: string | null; costmap_layer_id?: string | null }) =>
     jpost<{ trajectory: Trajectory; analysis: AnalysisResult }>("/api/analyze", body),
 
+  // 任意の点列（保存済みルート等）に点群由来 DSM の標高 z[m] を後付けサンプリング。
+  elevationSample: (points: [number, number][], costmapLayerId?: string | null, smoothM?: number) =>
+    jpost<{ z: (number | null)[]; layer_id: string; n: number; n_missing: number }>("/api/elevation/sample", {
+      points: points.map(([x, y]) => ({ x, y })),
+      costmap_layer_id: costmapLayerId ?? null,
+      ...(smoothM != null ? { smooth_m: smoothM } : {}),
+    }),
+
   listVehicles: () => jget<Vehicle[]>("/api/vehicles"),
 
   vehicleDetail: (id: string) =>
@@ -159,19 +236,26 @@ export const api = {
     }>(`/api/vehicles/${id}/detail`),
   saveVehicleOverride: (id: string, fields: Record<string, number>) =>
     jput<{ effective: Record<string, unknown>; override: Record<string, number> }>(`/api/vehicles/${id}`, { fields }),
-  resetVehicleOverride: (id: string) => fetch(`/api/vehicles/${id}/override`, { method: "DELETE" }),
+  resetVehicleOverride: (id: string) => jdelete(`/api/vehicles/${id}/override`),
 
-  layerPoints: (lasLayerId: string, maxPoints = 200000) =>
+  layerPoints: (lasLayerId: string, maxPoints = 200000, signal?: AbortSignal) =>
     jget<{
       n: number; x: number[]; y: number[]; z: number[];
       has_rgb: boolean; rgb: number[][] | null; zmin: number; zmax: number;
-    }>(`/api/layers/${lasLayerId}/points?max_points=${maxPoints}`),
+    }>(`/api/layers/${lasLayerId}/points?max_points=${maxPoints}`, signal),
 
-  dsmGrid: (costLayerId: string, maxSize = 160) =>
+  // バイナリ点群（JSON の ~1/10 サイズ・大点数向け）。origin 相対 f32 → PointCloud に展開。
+  layerPointsBin: async (lasLayerId: string, maxPoints = 1_000_000, signal?: AbortSignal): Promise<PointCloud> => {
+    const r = await fetch(`/api/layers/${lasLayerId}/points.bin?max_points=${maxPoints}`, { signal });
+    if (!r.ok) throw await toApiError(r);
+    return parsePointsBin(await r.arrayBuffer());
+  },
+
+  dsmGrid: (costLayerId: string, maxSize = 160, signal?: AbortSignal) =>
     jget<{
       nx: number; ny: number; x0: number; y0: number; dx: number; dy: number;
       z: (number | null)[][]; zmin: number; zmax: number;
-    }>(`/api/costmap/${costLayerId}/dsm_grid?max_size=${maxSize}`),
+    }>(`/api/costmap/${costLayerId}/dsm_grid?max_size=${maxSize}`, signal),
 
   listProjects: () => jget<{ id: string; name: string; updated_at: string | null }[]>("/api/projects"),
   getProject: (id: string) => jget<{ id: string; name: string; state: Record<string, unknown> }>(`/api/projects/${id}`),
@@ -179,7 +263,7 @@ export const api = {
     jpost<{ id: string; name: string }>("/api/projects", { name, state, updated_at: new Date().toISOString() }),
   updateProject: (id: string, name: string, state: Record<string, unknown>) =>
     jput<{ id: string; name: string }>(`/api/projects/${id}`, { name, state, updated_at: new Date().toISOString() }),
-  deleteProject: (id: string) => fetch(`/api/projects/${id}`, { method: "DELETE" }),
+  deleteProject: (id: string) => jdelete(`/api/projects/${id}`),
 
   simulateSpotting: (body: {
     start: { x: number; y: number; heading_deg: number };
@@ -237,4 +321,18 @@ export const api = {
   // 分岐起点姿勢（親経路上の点の接線姿勢）
   fleetJunction: (points: [number, number][], s_frac: number) =>
     jpost<{ x: number; y: number; heading_deg: number }>("/api/fleet/junction", { points, s_frac }),
+
+  // 排土（パイル）配置計画: エリア内に円錐パイルを格子配置（間隔指定 or 撒き出し計算）
+  earthworksPiles: (body: {
+    polygon: [number, number][];
+    repose_deg?: number;
+    volume_m3?: number | null;
+    height_m?: number | null;
+    dx_m?: number | null;
+    dy_m?: number | null;
+    spread_thickness_m?: number | null;
+    stagger?: boolean;
+    stagger_invert?: boolean;
+    edge_margin_m?: number | null;
+  }) => jpost<import("@/types/api").PilePlanResult>("/api/earthworks/piles", body),
 };
