@@ -314,6 +314,7 @@ export const api = {
     clearance_m?: number;
     max_time_s?: number;
     auto_passing?: boolean;
+    park_at_goal?: boolean;
     dispatch?: "simultaneous" | "sequential";
     loops?: number;
   }) => jpost<import("@/types/api").FleetSimResult>("/api/fleet/simulate", body),

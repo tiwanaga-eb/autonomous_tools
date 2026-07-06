@@ -7,6 +7,10 @@
 優先度: 自由な区間を同時に欲した場合は priority 小（＝高優先）が先に確保。膠着（全車停止して
 循環待ち）は**デッドロック検出**して報告する（解消＝待避所は Phase C）。
 
+到達済み（done）車両は既定で**退場扱い**（追従・衝突判定から除外）。積込/排土点を共有する
+経路の端点重なりを誤検出しないための仕様。到達後もその場に留まる運用（駐機）を模すには
+park_at_goal=True を指定する（後続は駐機車の手前で停止する）。
+
 時間離散ステップ。座標は作業CRS(メートル)。
 """
 from __future__ import annotations
@@ -127,7 +131,8 @@ def _pose_at(pts: np.ndarray, s_arr: np.ndarray, s: float):
 
 
 def simulate_fleet(vehicles: list[SimVehicle], *, dt: float = 0.2, gap_m: float = 2.0,
-                   max_time: float = 600.0, cell: float = 0.5, clearance_m: float = 0.0) -> SimResult:
+                   max_time: float = 600.0, cell: float = 0.5, clearance_m: float = 0.0,
+                   park_at_goal: bool = False) -> SimResult:
     """複数台の簡易シミュレーション。返値 SimResult（各車の時系列 trace ＋ イベント ＋ デッドロック）。
 
     gap_m: 占有区間手前で止まる際の停止マージン[m]（規定減速度に上乗せの安全余裕）。
@@ -246,7 +251,7 @@ def simulate_fleet(vehicles: list[SimVehicle], *, dt: float = 0.2, gap_m: float 
             pi = pts[i]
             ix, iy = cur_xy[i]
             for j in range(nv):
-                if j == i or done[j] or t < vehicles[j].start_time:
+                if j == i or (done[j] and not park_at_goal) or t < vehicles[j].start_time:
                     continue
                 jx, jy = cur_xy[j]
                 dd = np.hypot(pi[:, 0] - jx, pi[:, 1] - jy)
@@ -316,11 +321,11 @@ def simulate_fleet(vehicles: list[SimVehicle], *, dt: float = 0.2, gap_m: float 
             fi = traces[i][k]
             # 走行中(出発済かつ未到達)の車両どうしのみ評価。到達済(=配送/退場)や未発進は除外
             # （積込/排土点を共有する経路で端点が重なる誤検出を避ける）。
-            if fi["t"] < vehicles[i].start_time or fi["state"] == "done":
+            if fi["t"] < vehicles[i].start_time or (fi["state"] == "done" and not park_at_goal):
                 continue
             for j in range(i + 1, nv):
                 fj = traces[j][k]
-                if fj["t"] < vehicles[j].start_time or fj["state"] == "done":
+                if fj["t"] < vehicles[j].start_time or (fj["state"] == "done" and not park_at_goal):
                     continue
                 d = float(np.hypot(fi["x"] - fj["x"], fi["y"] - fj["y"]))
                 if d < min_sep:
@@ -360,7 +365,7 @@ def _yielder(vehicles, i, j):
 
 def simulate_fleet_auto(vehicles: list[SimVehicle], *, dt: float = 0.2, gap_m: float = 2.0,
                         max_time: float = 600.0, cell: float = 0.5, clearance_m: float = 0.0,
-                        max_bays: int = 6) -> SimResult:
+                        max_bays: int = 6, park_at_goal: bool = False) -> SimResult:
     """`simulate_fleet` を実行し、衝突(接触)が出たら**低優先側へ自動で待避所(横退避)**を入れて再試行する。
 
     衝突した最接近ペアの共有競合区間の中点に、譲る側(低優先)の経路を横退避させる待避所を配置→再シム。
@@ -377,7 +382,8 @@ def simulate_fleet_auto(vehicles: list[SimVehicle], *, dt: float = 0.2, gap_m: f
                        priority=v.priority, start_time=v.start_time, name=v.name) for v in vehicles]
     auto_bays: list[dict] = []
     tried: set = set()  # (vehicle, side) 既試行
-    res = simulate_fleet(work, dt=dt, gap_m=gap_m, max_time=max_time, cell=cell, clearance_m=clearance_m)
+    res = simulate_fleet(work, dt=dt, gap_m=gap_m, max_time=max_time, cell=cell,
+                         clearance_m=clearance_m, park_at_goal=park_at_goal)
     for _ in range(max_bays):
         # 接触(collision) または 対向膠着(deadlock=正面で停止)を、待避所で解消する。
         if not (res.collision or res.deadlock) or res.min_sep_pair is None:
@@ -406,7 +412,8 @@ def simulate_fleet_auto(vehicles: list[SimVehicle], *, dt: float = 0.2, gap_m: f
         prev_sep = res.min_separation_m
         work[y].points = lateral_detour(work[y].points, s_center=s_center, offset=offset,
                                         side=side, ramp=max(6.0, hold * 0.5), hold=hold)
-        trial = simulate_fleet(work, dt=dt, gap_m=gap_m, max_time=max_time, cell=cell, clearance_m=clearance_m)
+        trial = simulate_fleet(work, dt=dt, gap_m=gap_m, max_time=max_time, cell=cell,
+                               clearance_m=clearance_m, park_at_goal=park_at_goal)
         # 採用条件: 解消した、または min_separation が改善した場合のみ。
         # 悪化する待避所は巻き戻す（悪化を積み重ねて max_bays まで暴走するのを防ぐ）。
         resolved = not (trial.collision or trial.deadlock)

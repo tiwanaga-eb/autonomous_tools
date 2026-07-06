@@ -184,3 +184,19 @@ def test_shallow_merge_flows_with_priority_tiebreak():
     res = simulate_fleet([a, b], dt=0.2)
     assert res.status == "OK", res.status  # 旧実装: DEADLOCK（相互に前方車と認識して両者停止）
     assert not res.collision
+
+
+def test_park_at_goal_keeps_done_vehicle_as_obstacle():
+    """M3: 既定は到達車=退場（後続がすり抜け可・端点共有の誤検出回避）。
+    park_at_goal=True で駐機扱いになり、後続は駐機車の手前で停止する（接触なし）。"""
+    a = _veh((0, 0), (50, 0), priority=0, name="A")      # 50m 先で停車（B の経路上）
+    b = _veh((12, 0), (100, 0), priority=1, name="B", start_time=25.0)  # A 駐機後に出発して通過を試みる
+    # 既定: A は到達後に退場 → B は通過して到達
+    res = simulate_fleet([a, b], dt=0.2, max_time=120)
+    assert res.status == "OK" and not res.collision
+    assert res.traces[1][-1]["s"] >= 84.0  # B の経路長 88m をほぼ走破
+    # 駐機: B は A の手前で停止（進めない=膠着として報告されるが接触はしない）
+    res2 = simulate_fleet([a, b], dt=0.2, max_time=120, park_at_goal=True)
+    assert not res2.collision
+    assert res2.status in ("DEADLOCK", "TIMEOUT")
+    assert res2.traces[1][-1]["s"] < 38.0  # A(Bの弧長38m地点) の手前で停止

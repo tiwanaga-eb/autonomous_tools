@@ -23,6 +23,7 @@ export function FleetPanel() {
   const [clearance, setClearance] = useState(0.5);
   const [gap, setGap] = useState(2.0);
   const [autoPassing, setAutoPassing] = useState(false);
+  const [parkAtGoal, setParkAtGoal] = useState(false);
   const [dispatch, setDispatch] = useState<"simultaneous" | "sequential">("simultaneous");
   const [loops, setLoops] = useState(2);
   const [busy, setBusy] = useState(false);
@@ -62,7 +63,7 @@ export function FleetPanel() {
     setBusy(true);
     setStatus("簡易シミュレーション中…");
     try {
-      const res = await api.fleetSimulate({ routes: buildRoutes(), dt_s: 0.2, gap_m: gap, clearance_m: clearance, auto_passing: autoPassing, dispatch, loops });
+      const res = await api.fleetSimulate({ routes: buildRoutes(), dt_s: 0.2, gap_m: gap, clearance_m: clearance, auto_passing: autoPassing, park_at_goal: parkAtGoal, dispatch, loops });
       setFleetSim(res);
       setFleetSimT(0);
       setShowSavedRoutes(true);
@@ -260,6 +261,11 @@ export function FleetPanel() {
                  title="接触(対向単線など)が出たら、低優先側の経路へ自動で待避所(横退避)を入れて解決を試みる">
             <input type="checkbox" checked={autoPassing} onChange={(e) => setAutoPassing(e.target.checked)} />
             接触時に自動で待避所を入れる
+          </label>
+          <label className="slider" style={{ flexDirection: "row", gap: 6, alignItems: "center" }}
+                 title="ON: 到達した車はその場に駐機し、後続は手前で停止する。OFF(既定): 到達車は退場扱い（積込/排土点を共有する経路の端点重なりを誤検出しない）">
+            <input type="checkbox" checked={parkAtGoal} onChange={(e) => setParkAtGoal(e.target.checked)} />
+            到達後もその場に駐機（障害物として残す）
           </label>
         </>
       )}

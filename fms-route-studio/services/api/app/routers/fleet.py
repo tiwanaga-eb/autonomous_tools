@@ -104,6 +104,7 @@ class SimRequest(BaseModel):
     max_time_s: float = Field(600.0, gt=0.0)
     auto_passing: bool = False             # 接触時に低優先側へ自動で待避所を入れて解決を試みる
     dispatch: str = "simultaneous"         # "simultaneous"=全車同時 / "sequential"=逐次ローテーション
+    park_at_goal: bool = False             # 到達後もその場に留まる（駐機）。既定は退場扱い（端点共有の誤検出回避）
     loops: int = Field(1, ge=1, le=50)     # sequential 時の周回数（各車が経路をN周）
 
 
@@ -154,7 +155,8 @@ def simulate(req: SimRequest):
     else:
         runner = simulate_fleet_auto if req.auto_passing else simulate_fleet
         res = runner(vehicles, dt=req.dt_s, gap_m=req.gap_m,
-                     clearance_m=req.clearance_m, max_time=req.max_time_s)
+                     clearance_m=req.clearance_m, max_time=req.max_time_s,
+                     park_at_goal=req.park_at_goal)
     return {
         "status": res.status,
         "deadlock": res.deadlock,
