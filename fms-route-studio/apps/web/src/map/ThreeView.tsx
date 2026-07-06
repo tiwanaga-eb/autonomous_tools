@@ -11,13 +11,10 @@ import type { PointCloud } from "@/api/client";
 import { dispatch } from "@/commandBus";
 import { downloadDataUrl, timestampName } from "@/exporters";
 import { pickLayer } from "@/layerSelect";
+import { gridFromPoints } from "@/map/elevGrid";
+import type { Grid } from "@/map/elevGrid";
 import { useStore } from "@/store/useStore";
 import type { XY } from "@/types/api";
-
-interface Grid {
-  nx: number; ny: number; x0: number; y0: number; dx: number; dy: number;
-  z: (number | null)[][]; zmin: number; zmax: number;
-}
 
 function elevColor(t: number): [number, number, number] {
   const stops: [number, number[]][] = [
@@ -209,7 +206,10 @@ export function ThreeView() {
     s.ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
     s.raycaster.setFromCamera(s.ndc, s.camera);
     let hit: THREE.Vector3 | null = null;
-    if (s.terrain.visible && s.terrain.children.length) {
+    // 地形メッシュ（DSM または点群由来グリッド）があれば常にレイキャストして表面へ投影する。
+    // 点群モードでは terrain は非表示だが、three の Raycaster は visible を見ないため
+    // ピッキング面としてそのまま使える＝クリックが点群表面の高さに一致する。
+    if (s.terrain.children.length) {
       const ix = s.raycaster.intersectObjects(s.terrain.children, true);
       if (ix.length) hit = ix[0].point;
     }
@@ -513,7 +513,10 @@ export function ThreeView() {
         lasLayer ? api.layerPointsBin(lasLayer.id, pointBudget, ac.signal).catch(() => null) : Promise.resolve(null),
       ]).finally(() => gBusy(false));
       if (cancelled || !st.current) return;
-      s.grid = grid; s.pts = pts;
+      // DSM（コストマップ由来）が無くても、点群から粗い標高グリッドを作って
+      // 経路・エリア・パイル・クリック投影を点群表面に追従させる（基準面張り付きの解消）。
+      s.grid = grid ?? (pts && pts.n ? gridFromPoints(pts) : null);
+      s.pts = pts;
       if (grid) {
         s.origin = { ox: grid.x0 + (grid.dx * (grid.nx - 1)) / 2, oy: grid.y0 + (grid.dy * (grid.ny - 1)) / 2, oz: (grid.zmin + grid.zmax) / 2 };
       } else if (pts && pts.n) {
