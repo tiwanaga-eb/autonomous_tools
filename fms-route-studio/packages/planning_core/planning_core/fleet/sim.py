@@ -197,8 +197,9 @@ def simulate_fleet(vehicles: list[SimVehicle], *, dt: float = 0.2, gap_m: float 
         moved_total = 0.0
         active_blocked = 0
         n_active = 0
-        # ステップ開始時の各車の現在位置（前方車追従 car-following の判定用）。
-        cur_xy = [_pose_at(pts[k], s_arr[k], s[k])[:2] for k in range(nv)]
+        # ステップ開始時の各車の現在姿勢（前方車追従 car-following の判定用）。
+        cur_pose = [_pose_at(pts[k], s_arr[k], s[k]) for k in range(nv)]  # (x, y, heading_deg)
+        cur_xy = [(p[0], p[1]) for p in cur_pose]
         for i in order:
             if done[i]:
                 continue
@@ -238,8 +239,12 @@ def simulate_fleet(vehicles: list[SimVehicle], *, dt: float = 0.2, gap_m: float 
                     targets.append(s[i])                   # 既に区間内で未確保＝その場停止（膠着）
                     blocked = True
             # --- 前方車追従(car-following): 自分の進路上・前方(車線内)に他車がいれば、その手前で止まる。
-            #     区間Mutexは「区間の排他」だけなので、同一車線の追従/追越し・停止車への追突はこれで防ぐ。---
+            #     区間Mutexは「区間の排他」だけなので、同一車線の追従/追越し・停止車への追突はこれで防ぐ。
+            #     浅い合流（同方向扱い=Mutexなし）では互いを「前方車」と認識して相互停止＝偽デッドロック
+            #     になり得るため、**相互認識時は高優先が進み低優先だけが譲る**（通常の追従=前後関係が
+            #     明確な場合は相互にならないので従来どおり）。---
             pi = pts[i]
+            ix, iy = cur_xy[i]
             for j in range(nv):
                 if j == i or done[j] or t < vehicles[j].start_time:
                     continue
@@ -249,6 +254,17 @@ def simulate_fleet(vehicles: list[SimVehicle], *, dt: float = 0.2, gap_m: float 
                 lateral = float(dd[m])
                 s_proj = float(s_arr[i][m])
                 if lateral <= veh.half_width + vehicles[j].half_width + gap_m and s_proj > s[i] + 1e-6:
+                    # 相互認識か（j から見ても自分が前方か）を判定。相互かつ**ほぼ同方向**（浅い合流）
+                    # かつ自分が高優先なら譲らない（低優先 j だけが譲る＝偽デッドロック回避）。
+                    # 対向（ヘッドオン）に適用すると高優先が突っ込むため、進行方向 cos>0.5 に限定
+                    # （対向は従来どおり両者停止→DEADLOCK 報告→待避所で解消）。
+                    ddj = np.hypot(pts[j][:, 0] - ix, pts[j][:, 1] - iy)
+                    mj = int(np.argmin(ddj))
+                    mutual = (float(ddj[mj]) <= veh.half_width + vehicles[j].half_width + gap_m
+                              and float(s_arr[j][mj]) > s[j] + 1e-6)
+                    same_heading = math.cos(math.radians(cur_pose[i][2] - cur_pose[j][2])) > 0.5
+                    if mutual and same_heading and (veh.priority, i) < (vehicles[j].priority, j):
+                        continue  # 高優先側: 低優先 j が譲る（j 側の追従制約は残る）
                     lead_gap = s_proj - s[i] - (hl + vehicles[j].half_length) - gap_m  # 前方車体後端まで
                     targets.append(s[i] + max(0.0, lead_gap))
                     if lead_gap < 0.5:

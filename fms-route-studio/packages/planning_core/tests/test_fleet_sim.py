@@ -168,3 +168,19 @@ def test_reserve_decel_extends_reservation_only():
     assert common and all(t_res_c[z] <= t_res[z] for z in common)
     # 制動カーブは同じ decel → 先行車Aの所要時間は不変（±1ステップ）
     assert abs(base.travel_time_s[0] - conservative.travel_time_s[0]) <= 0.4
+
+
+def test_shallow_merge_flows_with_priority_tiebreak():
+    """M1: 20°の浅い合流（同方向扱い=Mutexなし）は相互追従の偽デッドロックにならず、
+    高優先が先行・低優先が譲って両車到達する。車体接触なし。"""
+    import math
+
+    th = math.radians(20)
+    a = SimVehicle(points=_line((0, 0), (120, 0), n=200), v_max=6.0, accel=1.0, decel=0.8,
+                   half_width=1.7, half_length=5.0)
+    b = SimVehicle(points=_line((60 - 60 * math.cos(th), -60 * math.sin(th)),
+                                (60 + 60 * math.cos(th), 60 * math.sin(th)), n=200),
+                   v_max=6.0, accel=1.0, decel=0.8, half_width=1.7, half_length=5.0, priority=1)
+    res = simulate_fleet([a, b], dt=0.2)
+    assert res.status == "OK", res.status  # 旧実装: DEADLOCK（相互に前方車と認識して両者停止）
+    assert not res.collision
