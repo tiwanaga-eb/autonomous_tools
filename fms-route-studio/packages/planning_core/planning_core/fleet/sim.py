@@ -183,10 +183,8 @@ def simulate_fleet(vehicles: list[SimVehicle], *, dt: float = 0.2, gap_m: float 
 
     def record(t):
         for i in range(nv):
+            # 後進ではないので heading は進行方向。停止/未発進も姿勢は記録する。
             x, y, hd = _pose_at(pts[i], s_arr[i], s[i])
-            if vehicles[i].points is not None and not (s[i] <= 0 and t < vehicles[i].start_time):
-                # 後進ではないので heading は進行方向。停止/未発進も姿勢は記録。
-                pass
             state = "done" if done[i] else ("wait" if v[i] < 0.05 and t >= vehicles[i].start_time else "run")
             traces[i].append({"t": round(t, 2), "s": round(s[i], 3), "x": x, "y": y,
                               "heading_deg": round(hd, 1), "v": round(v[i], 3), "state": state})

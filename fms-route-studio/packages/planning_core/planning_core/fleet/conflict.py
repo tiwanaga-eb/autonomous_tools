@@ -83,23 +83,6 @@ def _rc(transform, xs, ys):
     return rows, cols
 
 
-def _intervals_from_mask(in_conf: np.ndarray, s_arr: np.ndarray) -> list[ConflictInterval]:
-    """点ごとの競合bool列 in_conf を連続区間 (s_start,s_end) のリストに。"""
-    out: list[ConflictInterval] = []
-    n = len(in_conf)
-    i = 0
-    while i < n:
-        if in_conf[i]:
-            j = i
-            while j + 1 < n and in_conf[j + 1]:
-                j += 1
-            out.append(ConflictInterval(float(s_arr[i]), float(s_arr[j])))
-            i = j + 1
-        else:
-            i += 1
-    return out
-
-
 def _labels_near_points(labels, transform, pts, dt_other, thr, hw_self, cell):
     """各点を「最寄りの重なりセルの連結成分ラベル」へ割当てる（in-conflict 点のみ、それ以外 0）。
 
@@ -183,13 +166,3 @@ def detect_conflicts(routes: list[dict], *, cell: float = 0.5, clearance_m: floa
                     overlap_area_m2=area, kind=kind, bbox=bbox))
     return conflicts
 
-
-def _sample_le(grid: np.ndarray, rows: np.ndarray, cols: np.ndarray, thr: float) -> np.ndarray:
-    """grid[rows,cols] <= thr を範囲内のみ True で返す（範囲外は False）。"""
-    h, w = grid.shape
-    ok = (rows >= 0) & (rows < h) & (cols >= 0) & (cols < w)
-    out = np.zeros(len(rows), dtype=bool)
-    rr = np.clip(rows, 0, h - 1)
-    cc = np.clip(cols, 0, w - 1)
-    out[ok] = grid[rr[ok], cc[ok]] <= thr
-    return out
