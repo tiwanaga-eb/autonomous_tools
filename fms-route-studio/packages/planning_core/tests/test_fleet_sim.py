@@ -98,3 +98,47 @@ def test_sequential_rotation_dispatch():
     disp = [e for e in r.events if e["type"] == "dispatch"]
     assert sum(1 for e in disp if e["vehicle"] == 0) == 2
     assert all(tt > 0 for tt in r.travel_time_s)
+
+
+def test_crossing_60deg_creates_mutex_and_no_body_overlap():
+    """60°交差は Mutex で直列化される（H2 回帰）。
+
+    旧実装は中点1点の cos>0.3（±72°）で「同方向」と誤判定し Mutex を作らず、
+    車追従だけで捌いた結果 10m 級車体が重なっていた。区間全体平均 cos>0.85 に
+    厳格化後は片方が待ち、車体接触なしで両車到達する。
+    """
+    import math
+
+    L = 100.0
+    th = math.radians(60)
+    a = SimVehicle(points=_line((0, 0), (L, 0), n=200), v_max=8.0, accel=1.0, decel=0.5,
+                   half_width=1.7, half_length=5.0)
+    b = SimVehicle(points=_line((50 - 50 * math.cos(th), -50 * math.sin(th)),
+                                (50 + 50 * math.cos(th), 50 * math.sin(th)), n=200),
+                   v_max=8.0, accel=1.0, decel=0.5, half_width=1.7, half_length=5.0, priority=1)
+    res = simulate_fleet([a, b], dt=0.2)
+    assert res.status == "OK", res.status
+    assert not res.collision
+    assert any(e["type"] == "reserve" for e in res.events)  # Mutex が機能している
+    # 車体対角の和より十分離れている（車体が触れ得ない）
+    assert res.min_separation_m is not None and res.min_separation_m > 2 * math.hypot(5.0, 1.7)
+
+
+def test_bodies_overlap_detects_longitudinal_contact():
+    """車体重なり判定は車長を考慮する（H1 回帰: 旧の幅円判定は縦方向の接触を見逃す）。"""
+    from planning_core.fleet.sim import _bodies_overlap
+
+    vi = SimVehicle(points=_line((0, 0), (1, 0)), half_width=1.7, half_length=5.0)
+    # 同方位で中心間 6m（車長10m どうし → 4m 重なる。幅円判定なら 6 > 1.7+1.7 で見逃し）
+    f1 = {"x": 0.0, "y": 0.0, "heading_deg": 0.0}
+    f2 = {"x": 6.0, "y": 0.0, "heading_deg": 0.0}
+    assert _bodies_overlap(f1, f2, vi, vi)
+    # 中心間 12m（車長和 10m 超）→ 非接触
+    f3 = {"x": 12.0, "y": 0.0, "heading_deg": 0.0}
+    assert not _bodies_overlap(f1, f3, vi, vi)
+    # T字（直交）: 相手の側面へ 5m → 自車前端(5m)+相手半幅(1.7m) > 5m で接触
+    f4 = {"x": 5.0, "y": 0.0, "heading_deg": 90.0}
+    assert _bodies_overlap(f1, f4, vi, vi)
+    # 横に十分ずれた並走 → 非接触
+    f5 = {"x": 0.0, "y": 4.0, "heading_deg": 0.0}
+    assert not _bodies_overlap(f1, f5, vi, vi)

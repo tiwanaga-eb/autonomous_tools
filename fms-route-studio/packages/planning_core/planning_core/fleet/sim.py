@@ -65,6 +65,44 @@ def _cum_s(pts: np.ndarray) -> np.ndarray:
     return np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(pts[:, 0]), np.diff(pts[:, 1])))])
 
 
+def _rect_corners(x: float, y: float, heading_deg: float, hl: float, hw: float):
+    """車体矩形（全長2hl×全幅2hw、中心(x,y)・向きheading）の4隅。"""
+    th = math.radians(heading_deg)
+    c, s = math.cos(th), math.sin(th)
+    return [(x + dx * c - dy * s, y + dx * s + dy * c)
+            for dx, dy in ((hl, hw), (hl, -hw), (-hl, -hw), (-hl, hw))]
+
+
+def _rects_overlap(r1, r2) -> bool:
+    """凸四角形どうしの重なり判定（分離軸定理）。"""
+    for r in (r1, r2):
+        for k in range(4):
+            x1, y1 = r[k]
+            x2, y2 = r[(k + 1) % 4]
+            ax, ay = -(y2 - y1), (x2 - x1)  # 辺法線（正規化不要=射影の大小比較のみ）
+            p1 = [px * ax + py * ay for px, py in r1]
+            p2 = [px * ax + py * ay for px, py in r2]
+            if max(p1) < min(p2) or max(p2) < min(p1):
+                return False  # 分離軸あり=非交差
+    return True
+
+
+def _bodies_overlap(fi: dict, fj: dict, vi: "SimVehicle", vj: "SimVehicle") -> bool:
+    """トレースフレーム2つの車体（向き付き矩形）が重なるか。
+
+    旧実装の「中心間距離 < 半幅和」は車長を無視し、縦方向（進行方向）の車体重なりを
+    見逃していた（例: 10m級車体が斜め交差ですれ違うと中心間6mでも車体は接触）。
+    """
+    d = math.hypot(fi["x"] - fj["x"], fi["y"] - fj["y"])
+    reach = math.hypot(vi.half_length, vi.half_width) + math.hypot(vj.half_length, vj.half_width)
+    if d > reach:
+        return False  # 外接円が離れている=重なり得ない（SAT省略の高速パス）
+    return _rects_overlap(
+        _rect_corners(fi["x"], fi["y"], fi["heading_deg"], vi.half_length, vi.half_width),
+        _rect_corners(fj["x"], fj["y"], fj["heading_deg"], vj.half_length, vj.half_width),
+    )
+
+
 def _pose_at(pts: np.ndarray, s_arr: np.ndarray, s: float):
     """弧長 s の (x,y,heading[deg])。線形補間。"""
     n = len(pts)
@@ -110,10 +148,19 @@ def simulate_fleet(vehicles: list[SimVehicle], *, dt: float = 0.2, gap_m: float 
         a_ex = max((iv.s_end for iv in c.a_intervals), default=0.0)
         b_en = min((iv.s_start for iv in c.b_intervals), default=0.0)
         b_ex = max((iv.s_end for iv in c.b_intervals), default=0.0)
-        # 共有区間中点での両経路の進行方向の内積。>0.3 ≒ 同方向 → Mutex 不要（追従に任せる）。
-        ta = math.radians(_pose_at(pts[c.a], s_arr[c.a], 0.5 * (a_en + a_ex))[2])
-        tb = math.radians(_pose_at(pts[c.b], s_arr[c.b], 0.5 * (b_en + b_ex))[2])
-        same_dir = math.cos(ta - tb) > 0.3
+        # 同方向判定: 共有区間**全体**を等分サンプリングし、対応点どうしの進行方向の内積の
+        # 平均で判定する。同方向の重なり（追従/併走）は区間の同じ割合 f が物理的にほぼ同じ場所を
+        # 指すため全サンプルで cos≈1、対向は cos≈-1、交差は交差角の cos になる。
+        # 閾値 0.85（±約30°）: それ以下（60°交差等）は Mutex を作る。
+        # 旧: 中点1点の cos>0.3（±72°）→ 60°交差でも「同方向」扱いになり車体接触を許していた。
+        n_smp = 7
+        cs = []
+        for k_ in range(n_smp):
+            f = k_ / (n_smp - 1)
+            ta = math.radians(_pose_at(pts[c.a], s_arr[c.a], a_en + f * (a_ex - a_en))[2])
+            tb = math.radians(_pose_at(pts[c.b], s_arr[c.b], b_en + f * (b_ex - b_en))[2])
+            cs.append(math.cos(ta - tb))
+        same_dir = (sum(cs) / len(cs)) > 0.85
         if same_dir:
             continue  # 同方向は car-following が処理（区間排他にしない）
         zones.append(_Zone(routes=(c.a, c.b), enter={c.a: a_en, c.b: b_en}, exit={c.a: a_ex, c.b: b_ex}))
@@ -236,7 +283,8 @@ def simulate_fleet(vehicles: list[SimVehicle], *, dt: float = 0.2, gap_m: float 
             deadlock_time = round(t, 2)
             break
 
-    # 安全検証: 全時刻・全ペアの中心間最接近距離。半幅和を下回ると車体が重なる（危険/Mutex破れ）。
+    # 安全検証: 全時刻・全ペアの中心間最接近距離 ＋ **車体（向き付き矩形）の重なり判定**。
+    # 旧: 中心間距離 < 半幅和 のみ＝車長を無視し縦方向の車体重なりを見逃していた。
     min_sep = float("inf")
     min_sep_t: float | None = None
     min_sep_pair: tuple[int, int] | None = None
@@ -258,7 +306,7 @@ def simulate_fleet(vehicles: list[SimVehicle], *, dt: float = 0.2, gap_m: float 
                     min_sep = d
                     min_sep_t = fi["t"]
                     min_sep_pair = (i, j)
-                if d < vehicles[i].half_width + vehicles[j].half_width:
+                if not collision and _bodies_overlap(fi, fj, vehicles[i], vehicles[j]):
                     collision = True
 
     # 待機時間: 「相手占有区間に阻まれて停止」した wait イベント数×dt（起動時の静止や末端減速は含めない）。
