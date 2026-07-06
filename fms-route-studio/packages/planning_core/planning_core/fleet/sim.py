@@ -24,7 +24,8 @@ class SimVehicle:
     points: np.ndarray          # 経路中心線 (N,2)[m]
     v_max: float = 5.0          # 最大速度[m/s]
     accel: float = 0.5          # 加速[m/s^2]
-    decel: float = 1.0          # 減速[m/s^2]（規定減速度。予約距離にも使うため保守側=積載時の値を渡すこと）
+    decel: float = 1.0          # 減速[m/s^2]（走行中の制動カーブ v=√(2·decel·d) に使う通常減速度）
+    reserve_decel: float | None = None  # 予約距離 v_max²/(2·decel) 用の保守側減速度（積載時等。None=decel）
     half_width: float = 1.7     # 車幅/2[m]
     half_length: float = 3.0    # 車長/2[m]（区間占有を車体長ぶん膨張＝Mutexで車体が重ならない）
     priority: int = 0           # 小さいほど高優先
@@ -205,7 +206,11 @@ def simulate_fleet(vehicles: list[SimVehicle], *, dt: float = 0.2, gap_m: float 
                 continue
             n_active += 1
             veh = vehicles[i]
-            reserve_dist = veh.v_max * veh.v_max / (2.0 * max(veh.decel, 1e-6)) + gap_m + 1.0
+            # 予約距離は保守側（積載時）減速度で計算＝実制動が伸びても Mutex ゾーン内で
+            # 停止しきれない事態を防ぐ。走行中の制動カーブ(v_stop)は通常減速度 decel を使う
+            # （積載値で統一すると停止点の数百m手前から徐行が始まり非現実的になる）。
+            r_dec = veh.reserve_decel if veh.reserve_decel else veh.decel
+            reserve_dist = veh.v_max * veh.v_max / (2.0 * max(r_dec, 1e-6)) + gap_m + 1.0
             hl = veh.half_length
             # まだ通過し終えていない競合区間について、**接近時(制動距離内)に予約**を試みる。
             # 占有区間は車体長ぶん膨張(enter-hl 〜 exit+hl)＝車体が区間にかかる間ずっと占有とみなし、
@@ -351,7 +356,8 @@ def simulate_fleet_auto(vehicles: list[SimVehicle], *, dt: float = 0.2, gap_m: f
     from .passing import lateral_detour
 
     work = [SimVehicle(points=np.asarray(v.points, float).copy(), v_max=v.v_max, accel=v.accel,
-                       decel=v.decel, half_width=v.half_width, half_length=v.half_length,
+                       decel=v.decel, reserve_decel=v.reserve_decel,
+                       half_width=v.half_width, half_length=v.half_length,
                        priority=v.priority, start_time=v.start_time, name=v.name) for v in vehicles]
     auto_bays: list[dict] = []
     tried: set = set()  # (vehicle, side) 既試行

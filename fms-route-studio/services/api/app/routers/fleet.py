@@ -109,14 +109,17 @@ class SimRequest(BaseModel):
 
 def _sim_vehicle(r: SimRouteIn) -> SimVehicle:
     v_max, accel, decel, hw, hl = 5.0, 0.5, 1.0, _half_width(r), 3.0
+    reserve_decel: float | None = None
     if r.vehicle_id:
         try:
             v = vehicle_overrides.resolve(r.vehicle_id)
             v_max = float(v.max_speed_fwd or 5.0)
             accel = float(getattr(v, "max_accel", None) or 0.5)
-            # 減速度は保守側=積載時値を採用する。予約距離 v²/(2·decel) が空車値だと
-            # 積載車で制動距離が伸びた際に Mutex ゾーンが過小になり停止しきれないため。
-            decel = float(getattr(v, "max_decel_loaded", None) or getattr(v, "max_decel", None) or 1.0)
+            # 制動カーブは通常減速度、予約距離（安全マージン）は保守側=積載時値。
+            # 予約側が空車値だと積載車で制動が伸びた際に Mutex ゾーンが過小になる。
+            # 逆に制動カーブまで積載値にすると停止点の数百m手前から徐行になり非現実的。
+            decel = float(getattr(v, "max_decel", None) or 1.0)
+            reserve_decel = float(getattr(v, "max_decel_loaded", None) or decel)
             hl = float(getattr(v, "overall_length", None) or 6.0) / 2.0
         except FileNotFoundError:
             pass
@@ -131,7 +134,7 @@ def _sim_vehicle(r: SimRouteIn) -> SimVehicle:
     return SimVehicle(
         points=pts,
         v_max=float(r.v_max_mps) if r.v_max_mps else v_max,
-        accel=accel, decel=decel, half_width=hw, half_length=hl,
+        accel=accel, decel=decel, reserve_decel=reserve_decel, half_width=hw, half_length=hl,
         priority=r.priority, start_time=r.start_time_s, name=r.name or "",
     )
 

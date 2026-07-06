@@ -71,11 +71,15 @@ def test_override_propagates_to_planning():
 
 
 def test_fleet_sim_vehicle_uses_loaded_decel():
-    """fleet sim の車両は保守側（積載時）減速度で構築される（予約距離の過小防止）。"""
+    """fleet sim: 制動カーブは通常減速度、予約距離は保守側（積載時）減速度で構築される。
+
+    予約側が空車値だと積載車の制動が伸びた際に Mutex ゾーンが過小になる。
+    逆に制動カーブまで積載値だと停止点の数百m手前から徐行になり非現実的（M2）。"""
     from app.routers.fleet import SimRouteIn, _sim_vehicle
     from planning_core.vehicle import load_builtin
 
     prof = load_builtin("HM400")
     sv = _sim_vehicle(SimRouteIn(id="r1", points=[[0.0, 0.0], [50.0, 0.0]], vehicle_id="HM400"))
-    assert sv.decel == prof.max_decel_loaded
-    assert sv.decel < prof.max_decel  # 空車値より必ず保守側
+    assert sv.decel == prof.max_decel                  # 制動カーブ=通常値
+    assert sv.reserve_decel == prof.max_decel_loaded   # 予約距離=積載値（保守側）
+    assert sv.reserve_decel < sv.decel

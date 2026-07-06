@@ -142,3 +142,29 @@ def test_bodies_overlap_detects_longitudinal_contact():
     # 横に十分ずれた並走 → 非接触
     f5 = {"x": 0.0, "y": 4.0, "heading_deg": 0.0}
     assert not _bodies_overlap(f1, f5, vi, vi)
+
+
+def test_reserve_decel_extends_reservation_only():
+    """M2: reserve_decel（積載）は予約距離のみに効き、走行の制動カーブは decel（通常）のまま。
+
+    同一条件で reserve_decel を保守化しても所要時間（自由走行部）は変わらず、
+    予約イベントはより手前（早い時刻）で発生する。
+    """
+    def run(reserve_decel):
+        a = SimVehicle(points=_line((0, 0), (200, 0), n=200), v_max=10.0, accel=1.0, decel=1.0,
+                       reserve_decel=reserve_decel, half_width=1.7, half_length=5.0)
+        b = SimVehicle(points=_line((150, -80), (150, 80), n=200), v_max=10.0, accel=1.0, decel=1.0,
+                       reserve_decel=reserve_decel, half_width=1.7, half_length=5.0,
+                       priority=1, start_time=8.0)
+        return simulate_fleet([a, b], dt=0.2)
+
+    base = run(None)          # 予約距離 = v²/2·1.0 + 3 = 53m
+    conservative = run(0.25)  # 予約距離 = v²/2·0.25 + 3 = 203m
+    t_res = {tuple(sorted(e["zone"])): e["t"] for e in base.events if e["type"] == "reserve"}
+    t_res_c = {tuple(sorted(e["zone"])): e["t"] for e in conservative.events if e["type"] == "reserve"}
+    assert base.status == "OK" and conservative.status == "OK"
+    # 予約はより早く（手前で）発生する
+    common = set(t_res) & set(t_res_c)
+    assert common and all(t_res_c[z] <= t_res[z] for z in common)
+    # 制動カーブは同じ decel → 先行車Aの所要時間は不変（±1ステップ）
+    assert abs(base.travel_time_s[0] - conservative.travel_time_s[0]) <= 0.4
