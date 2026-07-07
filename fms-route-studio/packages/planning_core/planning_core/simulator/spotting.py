@@ -286,24 +286,27 @@ def _pmap(fn, items, n_workers: int):
         return list(ex.map(fn, items))
 
 
-def _footprint_scan(states, fp_samp, fp_inv, mask, ignore_ends_m):
+def _footprint_scan(xs, ys, head_deg, s_arr, fp_samp, fp_inv, mask, ignore_ends_m, scan_ds: float = 0.0):
     """各姿勢に車体フットプリントを置き、走行可能 mask 外に出るサンプル点を数える（**全姿勢を一括ベクトル化**）。
 
     返値 (inside, max_frac, worst_s)。inside=全姿勢でフットプリントがエリア内（端点除外区間を除く）。
     max_frac=最悪姿勢のはみ出し率(0..1)、worst_s=その弧長[m]。始点/終点の固定姿勢は車体が
     既定でオーバーハングしうるため ignore_ends_m[m] 以内を判定から除外する（経路の不備ではない）。
 
-    1姿勢ずつ outside_count を呼ぶと小配列の呼び出しオーバーヘッドが支配的になるため、全姿勢×全
-    サンプル点を (P,M) 配列にまとめて1回で mask 参照する（候補数を増やしても高速）。
+    入力は _build が持つ配列そのまま（dict 化前）— 40万dict/呼び出しの生成コストを避ける。
+    scan_ds>0 なら判定姿勢を弧長 scan_ds 間隔に間引く（端点は常に含む）。車体は10m級・サンプル点
+    間隔~1m なので 0.6m 間引きでの検出漏れは実質ない（経路ステップ0.3mの全点判定は過剰）。
     """
-    n = len(states)
+    n = len(xs)
     total = max(1, len(fp_samp))
     if n == 0:
         return True, 0.0, None
-    xs = np.fromiter((st["x"] for st in states), float, n)
-    ys = np.fromiter((st["y"] for st in states), float, n)
-    yaws = np.radians(np.fromiter((st["heading_deg"] for st in states), float, n))
-    s_arr = np.fromiter((st["s"] for st in states), float, n)
+    if scan_ds > 0.0 and n > 3 and float(s_arr[-1]) > scan_ds:
+        targets = np.arange(0.0, float(s_arr[-1]), scan_ds)
+        idx = np.unique(np.concatenate([np.searchsorted(s_arr, targets), [n - 1]]))
+        idx = np.clip(idx, 0, n - 1)
+        xs, ys, head_deg, s_arr = xs[idx], ys[idx], head_deg[idx], s_arr[idx]
+    yaws = np.radians(head_deg)
     c = np.cos(yaws)
     sn = np.sin(yaws)
     mx = fp_samp[:, 0]
@@ -332,7 +335,8 @@ def _footprint_scan(states, fp_samp, fp_inv, mask, ignore_ends_m):
 
 
 def _build(segments, speed_fwd, speed_rev, transform, mask, dt, cost, obstacle_value, cmax, footprint, tx, ty,
-           fp_samp=None, fp_inv=None, ignore_ends_m=0.0, tyaw=None):
+           fp_samp=None, fp_inv=None, ignore_ends_m=0.0, tyaw=None, scan_ds: float = 0.0,
+           light: bool = False):
     """segments=[(pts, gear), ...] → SpottingResult（メトリクス・コスト積分・クリアランス算出）。
 
     fp_samp/fp_inv（車体サンプル点＋逆アフィン）を与えると **向き付きフットプリントの包含**を
@@ -405,20 +409,29 @@ def _build(segments, speed_fwd, speed_rev, transform, mask, dt, cost, obstacle_v
         cmin = -1.0 if bool(oob.any()) else float(dt[rr, cc].min())
 
     head_deg = np.degrees(HEAD)
-    states = [
-        {"x": float(X[i]), "y": float(Y[i]), "heading_deg": float(head_deg[i]),
-         "gear": ("R" if is_rev[i] else "F"), "s": float(s_arr[i]), "t": float(t_arr[i])}
-        for i in range(n)
-    ]
+    if light:
+        # 軽量モード（候補の粗ランク付け用）: 点列 dict と診断（cusp マージン実測）を省く。
+        # 数千候補 × 数百点の dict 生成が粗評価コストの大半を占めるため。points は空。
+        states = []
+    else:
+        # dict 構築は tolist() 経由（np スカラーの float() 個別変換より数倍速い。
+        # 候補2千件×数百点=数十万 dict を作るため、ここの定数倍が全体に効く）。
+        xl, yl, hl = X.tolist(), Y.tolist(), head_deg.tolist()
+        sl, tl = s_arr.tolist(), t_arr.tolist()
+        gl = np.where(is_rev, "R", "F").tolist()
+        states = [
+            {"x": xl[i], "y": yl[i], "heading_deg": hl[i], "gear": gl[i], "s": sl[i], "t": tl[i]}
+            for i in range(n)
+        ]
 
     # 到達方位誤差[°]（目標 yaw が与えられた場合のみ。P-008「一発到達精度 ±0.5m/±5°」の方位側）
     err_deg = None
-    if tyaw is not None and states:
-        d = (states[-1]["heading_deg"] - math.degrees(tyaw)) % 360.0
+    if tyaw is not None and n:
+        d = (float(head_deg[-1]) - math.degrees(tyaw)) % 360.0
         err_deg = float(min(d, 360.0 - d))
     # 内部 cusp の実効直線マージン（診断）。manual_switch_pose 等の early-return 経路も
     # 含め全結果に付くよう、最終選択時ではなくここで実測する。
-    cms = _cusp_margins_of(states) if switch_points else []
+    cms = _cusp_margins_of(states) if (switch_points and states) else []
     res = SpottingResult(
         points=states, switch_points=switch_points,
         length_total=length_fwd + length_rev, length_fwd=length_fwd, length_rev=length_rev,
@@ -426,14 +439,15 @@ def _build(segments, speed_fwd, speed_rev, transform, mask, dt, cost, obstacle_v
         min_clearance_m=(cmin if cmin is not None and math.isfinite(cmin) else cmin),
         cost_integral=cost_integral,
         total_turn_rad=total_turn,
-        approach_error_m=float(np.hypot(states[-1]["x"] - tx, states[-1]["y"] - ty)) if states else 1e9,
+        approach_error_m=float(np.hypot(X[-1] - tx, Y[-1] - ty)) if n else 1e9,
         approach_error_deg=err_deg,
         min_cusp_margin_m=(round(min(cms), 2) if cms else None),
     )
     # フットプリント包含（向き付き）が使えるならそれをハード制約に。狭窄エリアで切り返し点を
     # 含む全姿勢の車体がエリア内に収まるかを厳密判定する（ユーザー要件）。
-    if fp_samp is not None and mask is not None and transform is not None and states:
-        inside, max_frac, worst_s = _footprint_scan(states, fp_samp, fp_inv, mask, ignore_ends_m)
+    if fp_samp is not None and mask is not None and transform is not None and n:
+        inside, max_frac, worst_s = _footprint_scan(X, Y, head_deg, s_arr, fp_samp, fp_inv, mask,
+                                                    ignore_ends_m, scan_ds)
         res.footprint_inside = inside
         res.fp_max_frac = max_frac
         res.fp_worst_s = worst_s
@@ -723,10 +737,14 @@ def plan_spotting(
         def fp_ok(x, y, yaw):  # noqa: ANN001
             return footprint_clear(fp_samp, x, y, yaw, drivable_mask, fp_inv)
 
+    # フットプリント判定姿勢の弧長間隔。経路ステップ(0.3m)の全点判定は 10m級車体では過剰で、
+    # 候補評価コストの大半を占めていた。0.6m 間引きで実質同じ判定（端点は常に含む）。
+    scan_ds = max(step, 0.6)
+
     def ev(segments):
         return _build(segments, speed_fwd, speed_rev, transform, drivable_mask, dt, cost, obstacle_value,
                       cmax, footprint_radius, tx, ty, fp_samp=fp_samp, fp_inv=fp_inv,
-                      ignore_ends_m=footprint_ignore_ends_m, tyaw=tyaw)
+                      ignore_ends_m=footprint_ignore_ends_m, tyaw=tyaw, scan_ds=scan_ds)
 
     cands: list[SpottingResult] = []
     allow_switch = (max_switchbacks is None) or (max_switchbacks >= 1)
@@ -784,11 +802,10 @@ def plan_spotting(
         # (1) ドック前方の格子。**切り返し角度の多様性**を最大化するため進入方位 dh を ±12度刻みで
         #     ±156度まで、距離・横オフセットも密に刻む（切り返し後の進入角を広く探索）。
         # (2) ターゲット周囲リング: 方位角 bearing を20度刻みで一周、側方・斜め・背後からの差し込み。
-        poses: list[tuple] = []
+        raw_poses: list[tuple] = []
 
         def _add_pose(Sx, Sy, Syaw):
-            if fp_ok is None or fp_ok(Sx, Sy, Syaw):
-                poses.append((Sx, Sy, Syaw))
+            raw_poses.append((Sx, Sy, Syaw))
 
         dhs = tuple(math.radians(a) for a in range(-156, 157, 12))
         for d in np.linspace(max(0.4 * rho, 1.5), max(5.0 * rho, 16.0), 11):
@@ -813,13 +830,65 @@ def plan_spotting(
                 for hfac in (0.3, 0.6, 1.0):
                     _add_pose(tx + d * math.cos(bdir), ty + d * math.sin(bdir), tyaw + hfac * bearing)
 
+        # ステージ姿勢の事前フィルタ（車体がエリア内に置ける S だけ残す）。
+        # 1姿勢ずつ footprint_clear を呼ぶと ~2,800回の小配列呼び出しになるため、
+        # 全姿勢×全サンプル点を (P,M) にまとめて1回で判定する（_footprint_scan と同じ構造）。
+        if fp_ok is not None and raw_poses:
+            pa = np.asarray(raw_poses, float)
+            c_ = np.cos(pa[:, 2])
+            s_ = np.sin(pa[:, 2])
+            wx = pa[:, 0][:, None] + np.outer(c_, fp_samp[:, 0]) - np.outer(s_, fp_samp[:, 1])
+            wy = pa[:, 1][:, None] + np.outer(s_, fp_samp[:, 0]) + np.outer(c_, fp_samp[:, 1])
+            ia, ib, ic_, id_, ie, if_ = fp_inv
+            cols = np.floor(ia * wx + ib * wy + ic_).astype(np.intp)
+            rows = np.floor(id_ * wx + ie * wy + if_).astype(np.intp)
+            h_, w_ = drivable_mask.shape
+            oob = (rows < 0) | (rows >= h_) | (cols < 0) | (cols >= w_)
+            bad = oob | (~oob & (drivable_mask[np.clip(rows, 0, h_ - 1), np.clip(cols, 0, w_ - 1)] == 0))
+            ok_mask = ~bad.any(axis=1)
+            poses = [p for p, ok in zip(raw_poses, ok_mask) if ok]
+        else:
+            poses = raw_poses
+
         def _eval_stage(p):
             segs = _stage_segments(start, (p[0], p[1]), p[2], target, rho, step, margin, fp_ok,
                                    start_lead=end_lead, goal_lead=end_lead)
             return ev(segs) if segs is not None else None
 
+        # --- 二段階評価: ~2,800姿勢を全部フル解像度で評価すると ev が支配的（数秒）になる。
+        #     一次: 粗ステップ(2×step)＋粗スキャン間隔で全姿勢を採点 → best-effort と同じ
+        #     優先キー（成立性 > はみ出し率 > スコア）で上位 K 姿勢だけをフル解像度で再評価。
+        #     勝者の経路そのものはフル解像度で構築されるため出力品質は不変。切り返しゾーン
+        #     指定時はゾーン内候補が長距離で不利になりがちなので、ゾーン内上位も別枠で残す。---
+        step_c = step * 2.0
+
+        def _eval_stage_coarse(p):
+            segs = _stage_segments(start, (p[0], p[1]), p[2], target, rho, step_c, margin, fp_ok,
+                                   start_lead=end_lead, goal_lead=end_lead)
+            if segs is None:
+                return None
+            c = _build(segs, speed_fwd, speed_rev, transform, drivable_mask, dt, cost, obstacle_value,
+                       cmax, footprint_radius, tx, ty, fp_samp=fp_samp, fp_inv=fp_inv,
+                       ignore_ends_m=footprint_ignore_ends_m, tyaw=tyaw, scan_ds=scan_ds * 4.0,
+                       light=True)
+            c.score = _score(c, w)
+            return c
+
+        TOPK = 24
+        coarse = [(c, p) for c, p in zip(_pmap(_eval_stage_coarse, poses, n_workers), poses)
+                  if c is not None and _keep(c)]
+        key = lambda cp: (not cp[0].feasible, round(cp[0].fp_max_frac, 4), cp[0].score)  # noqa: E731
+        coarse.sort(key=key)
+        selected = coarse[:TOPK]
+        if switchback_zone is not None:
+            def _in_zone(c):
+                return c.switch_points and all(_point_in_poly(sx_, sy_, switchback_zone)
+                                               for (sx_, sy_) in c.switch_points)
+            zoned_c = [cp for cp in coarse if _in_zone(cp[0])]
+            seen_p = {id(p) for _c, p in selected}
+            selected += [cp for cp in zoned_c[:TOPK] if id(cp[1]) not in seen_p]
         # 切り返し点 S に直線マージンを入れて追従可能に（S 前後でステア0°）。**並列評価**。
-        for c in _pmap(_eval_stage, poses, n_workers):
+        for c in _pmap(_eval_stage, [p for _c, p in selected], n_workers):
             if c is not None and _keep(c):
                 cands.append(c)
 
