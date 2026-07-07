@@ -23,8 +23,12 @@ def test_put_get_reset_and_overridden_flag():
         assert r.status_code == 200, r.text
         eff = r.json()["effective"]
         assert eff["min_turning_radius"] == 14.0 and eff["overall_width"] == 6.0
-        # 寸法変更で footprint_polygon が再計算される（半幅3.0）
-        assert abs(abs(eff["footprint_polygon"][0][1]) - 3.0) < 1e-6
+        # 幅変更で footprint_polygon が追従（半幅3.0）＋後輪軸基準の前後非対称は保持される
+        poly = eff["footprint_polygon"]
+        assert abs(abs(poly[0][1]) - 3.0) < 1e-6
+        xs = [p[0] for p in poly]
+        assert max(xs) > -min(xs)  # 前端>後端＝後輪軸基準を維持（中心矩形に戻っていない）
+        assert abs(max(xs) - 7.825) < 1e-6  # 幅変更では前後端(x)は不変
         # 一覧に overridden フラグ
         lst = {v["id"]: v for v in client.get("/api/vehicles").json()}
         assert lst["HD785"]["overridden"] is True and lst["HD605"]["overridden"] is False

@@ -14,6 +14,32 @@ def test_hd785_rigid_bicycle():
     assert p.supports_steering_angle()
 
 
+def _fp_extents(poly):
+    xs = [pt[0] for pt in poly]
+    return max(xs), -min(xs)  # (前端+, 後端の大きさ)
+
+
+def test_hd_reference_is_rear_axle():
+    """HD系の footprint 基準点は後輪車輪軸中心＝前後非対称（前端>後端、後端は車体中心より後ろ寄り）。
+
+    ユーザー指定値: HD785 前+7.825/後-3.190, HD605 前+7.280/後-3.070。
+    基準点が車体中心なら前端=後端になる（対称）ので、非対称＝後輪軸基準であることを固定する。
+    """
+    expect = {"HD785": (7.825, 3.190), "HD605": (7.280, 3.070)}
+    for vid, (efront, erear) in expect.items():
+        p = load_builtin(vid)
+        assert p.footprint_polygon is not None
+        front, rear = _fp_extents(p.footprint_polygon)
+        assert abs(front - efront) < 1e-6, f"{vid} front {front}"
+        assert abs(rear - erear) < 1e-6, f"{vid} rear {rear}"
+        assert front > rear                                   # 前後非対称（後輪軸基準）
+        assert front > p.wheel_base                            # 前バンパーは前輪軸より前
+        # footprint_radius は基準点から最遠コーナー（前端側）と整合
+        import math
+        hw = p.overall_width / 2.0
+        assert abs(p.footprint_radius - math.hypot(front, hw)) < 0.05
+
+
 def test_cd110r_tracked_skid():
     p = load_builtin("CD110R")
     assert p.kinematic_type == "tracked_skid"

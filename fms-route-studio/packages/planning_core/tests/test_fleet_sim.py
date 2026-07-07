@@ -200,3 +200,27 @@ def test_park_at_goal_keeps_done_vehicle_as_obstacle():
     assert not res2.collision
     assert res2.status in ("DEADLOCK", "TIMEOUT")
     assert res2.traces[1][-1]["s"] < 38.0  # A(Bの弧長38m地点) の手前で停止
+
+
+def test_asymmetric_extents_shift_collision_envelope():
+    """基準点=後輪軸（前後非対称 extent）で車体矩形が前方へ伸びる（HD系の後輪軸基準）。
+
+    後輪軸を経路点に置く車は、車体が前方に大きく張り出す。front_ext を大きく取ると
+    前方の相手との接触が正しく検出される（対称 half_length では見逃す配置）。
+    """
+    from planning_core.fleet.sim import _bodies_overlap
+
+    # 自車: 後輪軸基準、前 8m / 後 3m（x=-3〜+8 を占有）。相手は小さなプローブ（点近似）。
+    vi = SimVehicle(points=_line((0, 0), (1, 0)), half_width=1.7, front_ext=8.0, rear_ext=3.0)
+    probe = SimVehicle(points=_line((0, 0), (1, 0)), half_width=0.1, front_ext=0.1, rear_ext=0.1)
+    f_self = {"x": 0.0, "y": 0.0, "heading_deg": 0.0}
+    # 前方 7m: 前端 8m 以内 → 接触（対称 half_length では基準点=中心と誤認し見逃す配置）
+    assert _bodies_overlap(f_self, {"x": 7.0, "y": 0.0, "heading_deg": 0.0}, vi, probe)
+    # 後方 4m: 後端 3m を超える → 非接触
+    assert not _bodies_overlap(f_self, {"x": -4.0, "y": 0.0, "heading_deg": 0.0}, vi, probe)
+
+
+def test_fext_rext_default_to_half_length():
+    """front_ext/rear_ext 未指定は half_length（対称=旧挙動フォールバック）。"""
+    v = SimVehicle(points=_line((0, 0), (1, 0)), half_length=4.0)
+    assert v.fext == 4.0 and v.rext == 4.0

@@ -136,10 +136,12 @@ export function vehicleShapeRings(
       wheel(fx, fy + dualGap / 2, 0);
       wheel(fx, fy - dualGap / 2, 0);
     };
-    wheel(L / 2, t / 2, dL);   // 前左（操舵・シングル）
-    wheel(L / 2, -t / 2, dR);  // 前右（操舵・シングル）
-    dualWheel(-L / 2, t / 2);  // 後左（ダブル）
-    dualWheel(-L / 2, -t / 2); // 後右（ダブル）
+    // 基準点(p)=後輪車輪軸中心。よって後輪軸は x=0、前輪軸は前方へ軸距 L。
+    // （経路点=後輪軸なので、旋回時に後輪が経路上に乗り前輪が振り出す＝実挙動と一致）。
+    wheel(L, t / 2, dL);   // 前左（操舵・シングル）
+    wheel(L, -t / 2, dR);  // 前右（操舵・シングル）
+    dualWheel(0, t / 2);   // 後左（ダブル・基準点上）
+    dualWheel(0, -t / 2);  // 後右（ダブル・基準点上）
   } else {
     out.push({ ring: bodyRect(p.x, p.y, a, frontExt, rearExt, v.w), kind: "footprint" });
   }

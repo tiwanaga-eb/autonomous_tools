@@ -64,11 +64,19 @@ def _apply(base: VehicleProfile, ov: dict) -> VehicleProfile:
     for k, v in ov.items():
         if k in EDITABLE_FIELDS and v is not None:
             data[k] = float(v) if not isinstance(v, bool) else v
-    # 寸法変更時、footprint_polygon を明示変更していなければ新寸法から矩形を再計算
+    # 寸法変更時、footprint_polygon を明示変更していなければ新寸法へ追従させる。
+    # 既定 footprint がある車両（HD/HM=後輪軸中心基準）は基準点・前後非対称を保つため、
+    # 既定多角形を長さ/幅比で**スケール**する（中心矩形で置き換えると基準点が車体中心に戻ってしまう）。
     if ("overall_length" in ov or "overall_width" in ov) and "footprint_polygon" not in ov:
-        hl = float(data["overall_length"]) / 2.0
-        hw = float(data["overall_width"]) / 2.0
-        data["footprint_polygon"] = [(hl, hw), (hl, -hw), (-hl, -hw), (-hl, hw)]
+        base_poly = base.footprint_polygon
+        if base_poly:
+            lx = float(data["overall_length"]) / float(base.overall_length) if base.overall_length else 1.0
+            wy = float(data["overall_width"]) / float(base.overall_width) if base.overall_width else 1.0
+            data["footprint_polygon"] = [(px * lx, py * wy) for px, py in base_poly]
+        else:
+            hl = float(data["overall_length"]) / 2.0
+            hw = float(data["overall_width"]) / 2.0
+            data["footprint_polygon"] = [(hl, hw), (hl, -hw), (-hl, -hw), (-hl, hw)]
     if data.get("footprint_polygon"):
         data["footprint_polygon"] = [tuple(p) for p in data["footprint_polygon"]]
     return VehicleProfile(**data)

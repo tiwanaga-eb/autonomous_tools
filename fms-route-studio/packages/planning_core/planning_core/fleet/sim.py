@@ -31,10 +31,22 @@ class SimVehicle:
     decel: float = 1.0          # 減速[m/s^2]（走行中の制動カーブ v=√(2·decel·d) に使う通常減速度）
     reserve_decel: float | None = None  # 予約距離 v_max²/(2·decel) 用の保守側減速度（積載時等。None=decel）
     half_width: float = 1.7     # 車幅/2[m]
-    half_length: float = 3.0    # 車長/2[m]（区間占有を車体長ぶん膨張＝Mutexで車体が重ならない）
+    half_length: float = 3.0    # 車長/2[m]（front_ext/rear_ext 未指定時の対称フォールバック）
+    # 基準点(=経路点=後輪車輪軸中心)から車体前端(+)/後端までの距離[m]（非対称。footprint 由来）。
+    # 未指定は half_length（対称=旧挙動）。HD/HM は基準点が後輪軸なので前後が非対称になる。
+    front_ext: float | None = None
+    rear_ext: float | None = None
     priority: int = 0           # 小さいほど高優先
     start_time: float = 0.0     # 出発時刻[s]
     name: str = ""
+
+    @property
+    def fext(self) -> float:
+        return self.front_ext if self.front_ext is not None else self.half_length
+
+    @property
+    def rext(self) -> float:
+        return self.rear_ext if self.rear_ext is not None else self.half_length
 
 
 @dataclass
@@ -70,12 +82,15 @@ def _cum_s(pts: np.ndarray) -> np.ndarray:
     return np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(pts[:, 0]), np.diff(pts[:, 1])))])
 
 
-def _rect_corners(x: float, y: float, heading_deg: float, hl: float, hw: float):
-    """車体矩形（全長2hl×全幅2hw、中心(x,y)・向きheading）の4隅。"""
+def _rect_corners(x: float, y: float, heading_deg: float, front: float, rear: float, hw: float):
+    """車体矩形の4隅。基準点(x,y)から前 front / 後 rear（ともに正）・左右 hw、向き heading。
+
+    基準点=後輪軸中心なので前後は非対称（前端=+front, 後端=-rear）。
+    """
     th = math.radians(heading_deg)
     c, s = math.cos(th), math.sin(th)
     return [(x + dx * c - dy * s, y + dx * s + dy * c)
-            for dx, dy in ((hl, hw), (hl, -hw), (-hl, -hw), (-hl, hw))]
+            for dx, dy in ((front, hw), (front, -hw), (-rear, -hw), (-rear, hw))]
 
 
 def _rects_overlap(r1, r2) -> bool:
@@ -99,12 +114,14 @@ def _bodies_overlap(fi: dict, fj: dict, vi: "SimVehicle", vj: "SimVehicle") -> b
     見逃していた（例: 10m級車体が斜め交差ですれ違うと中心間6mでも車体は接触）。
     """
     d = math.hypot(fi["x"] - fj["x"], fi["y"] - fj["y"])
-    reach = math.hypot(vi.half_length, vi.half_width) + math.hypot(vj.half_length, vj.half_width)
+    # 基準点は後輪軸なので外接円半径は前後端の遠い方を使う（過小プレフィルタ防止）。
+    reach = (math.hypot(max(vi.fext, vi.rext), vi.half_width)
+             + math.hypot(max(vj.fext, vj.rext), vj.half_width))
     if d > reach:
         return False  # 外接円が離れている=重なり得ない（SAT省略の高速パス）
     return _rects_overlap(
-        _rect_corners(fi["x"], fi["y"], fi["heading_deg"], vi.half_length, vi.half_width),
-        _rect_corners(fj["x"], fj["y"], fj["heading_deg"], vj.half_length, vj.half_width),
+        _rect_corners(fi["x"], fi["y"], fi["heading_deg"], vi.fext, vi.rext, vi.half_width),
+        _rect_corners(fj["x"], fj["y"], fj["heading_deg"], vj.fext, vj.rext, vj.half_width),
     )
 
 
@@ -215,14 +232,14 @@ def simulate_fleet(vehicles: list[SimVehicle], *, dt: float = 0.2, gap_m: float 
             # （積載値で統一すると停止点の数百m手前から徐行が始まり非現実的になる）。
             r_dec = veh.reserve_decel if veh.reserve_decel else veh.decel
             reserve_dist = veh.v_max * veh.v_max / (2.0 * max(r_dec, 1e-6)) + gap_m + 1.0
-            hl = veh.half_length
+            fext, rext = veh.fext, veh.rext   # 基準点(後輪軸)から前端/後端。前後非対称
             # まだ通過し終えていない競合区間について、**接近時(制動距離内)に予約**を試みる。
-            # 占有区間は車体長ぶん膨張(enter-hl 〜 exit+hl)＝車体が区間にかかる間ずっと占有とみなし、
-            # Mutex で相手と車体が重ならないようにする。空けば確保、相手占有中なら手前(enter-hl-gap)で停止。
+            # 占有区間は車体で膨張(enter-fext 〜 exit+rext)＝s(後輪軸)がこの範囲にある間、車体が
+            # [enter,exit] にかかる＝占有。Mutex で相手と車体が重ならないようにする。
             targets = [length[i]]
             blocked = False
             for z in zones_of(i):
-                en, ex = z.enter[i] - hl, z.exit[i] + hl   # 車体長ぶん膨張した占有区間
+                en, ex = z.enter[i] - fext, z.exit[i] + rext   # 車体で膨張した占有区間（前後非対称）
                 if s[i] > ex - 1e-6:
                     continue  # この区間は通過済み（もう要らない）
                 if z.owner == i:
@@ -268,7 +285,8 @@ def simulate_fleet(vehicles: list[SimVehicle], *, dt: float = 0.2, gap_m: float 
                     same_heading = math.cos(math.radians(cur_pose[i][2] - cur_pose[j][2])) > 0.5
                     if mutual and same_heading and (veh.priority, i) < (vehicles[j].priority, j):
                         continue  # 高優先側: 低優先 j が譲る（j 側の追従制約は残る）
-                    lead_gap = s_proj - s[i] - (hl + vehicles[j].half_length) - gap_m  # 前方車体後端まで
+                    # 自車前端(s+fext)から前方車後端(s_proj-相手rext)までの車間
+                    lead_gap = s_proj - s[i] - (fext + vehicles[j].rext) - gap_m
                     targets.append(s[i] + max(0.0, lead_gap))
                     if lead_gap < 0.5:
                         blocked = True
@@ -280,7 +298,7 @@ def simulate_fleet(vehicles: list[SimVehicle], *, dt: float = 0.2, gap_m: float 
             s_new = min(s[i] + v[i] * dt, length[i])
             # 通過し終えた区間を解放（車体後端が膨張区間を抜けたら）
             for z in zones_of(i):
-                if z.owner == i and s_new > z.exit[i] + hl - 1e-6:
+                if z.owner == i and s_new > z.exit[i] + rext - 1e-6:  # 車体後端が抜けた
                     z.owner = None
                     events.append({"t": round(t, 2), "vehicle": i, "type": "exit", "zone": z.routes})
             moved_total += s_new - s[i]
@@ -377,6 +395,7 @@ def simulate_fleet_auto(vehicles: list[SimVehicle], *, dt: float = 0.2, gap_m: f
     work = [SimVehicle(points=np.asarray(v.points, float).copy(), v_max=v.v_max, accel=v.accel,
                        decel=v.decel, reserve_decel=v.reserve_decel,
                        half_width=v.half_width, half_length=v.half_length,
+                       front_ext=v.front_ext, rear_ext=v.rear_ext,
                        priority=v.priority, start_time=v.start_time, name=v.name) for v in vehicles]
     auto_bays: list[dict] = []
     tried: set = set()  # (vehicle, side) 既試行

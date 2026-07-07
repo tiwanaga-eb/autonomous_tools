@@ -111,6 +111,8 @@ class SimRequest(BaseModel):
 def _sim_vehicle(r: SimRouteIn) -> SimVehicle:
     v_max, accel, decel, hw, hl = 5.0, 0.5, 1.0, _half_width(r), 3.0
     reserve_decel: float | None = None
+    front_ext: float | None = None
+    rear_ext: float | None = None
     if r.vehicle_id:
         try:
             v = vehicle_overrides.resolve(r.vehicle_id)
@@ -122,6 +124,13 @@ def _sim_vehicle(r: SimRouteIn) -> SimVehicle:
             decel = float(getattr(v, "max_decel", None) or 1.0)
             reserve_decel = float(getattr(v, "max_decel_loaded", None) or decel)
             hl = float(getattr(v, "overall_length", None) or 6.0) / 2.0
+            # 経路点=基準点(後輪軸中心)なので、車体の前後端は footprint の x 範囲から取る
+            # （前後非対称）。fleet の車体矩形/Mutex/追従がこの非対称extentで正しく判定される。
+            poly = getattr(v, "footprint_polygon", None)
+            if poly:
+                xs = [float(p[0]) for p in poly]
+                front_ext = max(xs)
+                rear_ext = -min(xs)
         except FileNotFoundError:
             pass
     pts = [(float(x), float(y)) for x, y in r.points]
@@ -136,6 +145,7 @@ def _sim_vehicle(r: SimRouteIn) -> SimVehicle:
         points=pts,
         v_max=float(r.v_max_mps) if r.v_max_mps else v_max,
         accel=accel, decel=decel, reserve_decel=reserve_decel, half_width=hw, half_length=hl,
+        front_ext=front_ext, rear_ext=rear_ext,
         priority=r.priority, start_time=r.start_time_s, name=r.name or "",
     )
 

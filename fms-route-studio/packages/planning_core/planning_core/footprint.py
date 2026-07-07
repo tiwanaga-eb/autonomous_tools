@@ -6,8 +6,9 @@
   2) 生成済み軌跡の包含 violation 抽出（解析・UI 表示）。
 
 座標規約: footprint_polygon は基準点(姿勢x,y,yaw)基準 [m]、x=前後(前+) / y=左右。yaw は +East/CCW[rad]。
-（基準点は車種依存。HM400 は後輪2軸の中心。多角形をそのまま姿勢へ剛体変換するので、基準点が
- 中心でなくても判定は正しい。）
+（基準点は車種依存で **後輪車輪軸中心**（HM400=後輪2軸中心 / HD785・HD605=後輪軸中心）。これは
+ rigid_bicycle/articulated の運動学基準＝Dubins/RS/hybrid が生成する経路点と一致する。多角形を
+ そのまま姿勢へ剛体変換するので、基準点が車体中心でなくても判定は正しい。）
 """
 from __future__ import annotations
 
