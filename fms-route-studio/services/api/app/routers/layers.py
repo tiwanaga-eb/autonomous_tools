@@ -62,7 +62,11 @@ def set_layer_epsg(layer_id: str, epsg: int | None = None):
         raise HTTPException(400, f"invalid epsg: {epsg}")
     patch = {"epsg": (int(epsg) if epsg is not None else None),
              "crs_source": ("user" if epsg is not None else None)}
-    return store.update_layer(layer_id, patch)
+    meta = store.update_layer(layer_id, patch)
+    # 座標系が変わると DSM の配置も変わる → その場で再生成（オルソは「オルソ生成」で手動再生成）
+    if meta:
+        _generate_las_dsm(meta)
+    return meta
 
 
 def _load_las_points_working(meta: dict, max_points: int) -> tuple[np.ndarray, np.ndarray | None]:
@@ -168,17 +172,56 @@ def download_cog(layer_id: str):
     return FileResponse(meta["cog"], media_type="image/tiff", filename=f"{layer_id}.tif")
 
 
+def _generate_las_dsm(las_meta: dict, x=None, y=None, z=None) -> str | None:
+    """LAS から DSM(COG, float32, nodata=NaN) を生成しメタに dsm_cog を記録する。
+
+    コストマップ未生成でも経路の標高(Z)埋め込み・勾配解析ができるようにするフォールバック
+    （/plan・/analyze・/api/elevation/sample が cost レイヤの DSM が無いとき参照する）。
+    x/y/z を渡せば点の再読込を省く（オルソ生成と同時実行用）。失敗は None（呼び出し側続行）。
+    """
+    from planning_core.ortho import auto_ortho_res, points_to_dsm
+
+    try:
+        if x is None:
+            xyz, _rgb = _load_las_points_working(las_meta, max_points=12_000_000)
+            x, y, z = xyz[:, 0], xyz[:, 1], xyz[:, 2]
+        area = float(max(x.max() - x.min(), 1e-6) * max(y.max() - y.min(), 1e-6))
+        # DSM は勾配解析用: 0.25m より細かくしない（点密度ノイズが勾配に乗る）
+        r = max(auto_ortho_res(len(x), area, max_dim=MAX_RASTER_DIM), 0.25)
+        dsm, tr = points_to_dsm(x, y, z, res=r)
+        from .costmap import _write_cog
+
+        d = store.layer_dir(las_meta["id"])
+        d.mkdir(parents=True, exist_ok=True)
+        dsm_cog = str(d / "dsm.tif")
+        _write_cog(dsm_cog, dsm, tr, get_working_epsg(), nodata=float("nan"))
+        store.update_layer(las_meta["id"], {"dsm_cog": dsm_cog, "dsm_res_m": round(r, 3)})
+        las_meta["dsm_cog"] = dsm_cog
+        return dsm_cog
+    except Exception:  # noqa: BLE001 — DSM はフォールバック機能。失敗しても取込は成功扱い
+        return None
+
+
+def ensure_las_dsm(las_meta: dict) -> str | None:
+    """LAS レイヤの DSM パスを返す（無ければその場で生成して永続化）。"""
+    if las_meta.get("dsm_cog") and Path(las_meta["dsm_cog"]).exists():
+        return las_meta["dsm_cog"]
+    return _generate_las_dsm(las_meta)
+
+
 def _generate_ortho_from_las(las_meta: dict, res: float | None = None) -> dict:
     """LAS 点群からオルソ（平均色ラスタ）を生成し ortho レイヤとして登録する。
 
     las2ortho（PDAL 版 dsm2ortho3.py）のネイティブ移植: RGB があれば平均色、無ければ
     Z の 2-98% 正規化グレー。CRS はレイヤの解決規則（メタ指定>ヘッダ>推定）に従い
     作業CRSへ再投影済みの点から作るため、点群/コストマップと必ず重なる。
+    DSM（標高ラスタ）も同じ点群から併せて再生成する（点の読込を共有）。
     """
     from planning_core.ortho import auto_ortho_res, points_to_ortho
 
     xyz, rgb = _load_las_points_working(las_meta, max_points=24_000_000)
     x, y, z = xyz[:, 0], xyz[:, 1], xyz[:, 2]
+    _generate_las_dsm(las_meta, x, y, z)  # 標高/勾配用 DSM を同時更新
     area = float(max(x.max() - x.min(), 1e-6) * max(y.max() - y.min(), 1e-6))
     r = float(res) if res and res > 0 else auto_ortho_res(len(x), area, max_dim=MAX_RASTER_DIM)
     img, tr = points_to_ortho(x, y, z, rgb, res=r)
@@ -403,12 +446,16 @@ async def upload_layer(
 
     store.add_layer(meta)
 
-    # LAS 取り込み時のオルソ自動生成（las2ortho ワークフローの内蔵化）。
-    # 失敗してもアップロード自体は成功として返す（オルソは後から /ortho で再生成できる）。
-    if kind == "las" and make_ortho:
-        try:
-            ortho_meta = _generate_ortho_from_las(meta)
-            meta = store.update_layer(layer_id, {"auto_ortho_id": ortho_meta["id"]}) or meta
-        except Exception as e:  # noqa: BLE001
-            meta["ortho_error"] = f"オルソ自動生成に失敗: {e}"
+    # LAS 取り込み時のオルソ自動生成（las2ortho ワークフローの内蔵化）。DSM（標高/勾配用）は
+    # ortho の有無に依らず常に生成する（コストマップ未生成でも Z 埋め込み・勾配解析を可能に）。
+    # 失敗してもアップロード自体は成功として返す（オルソ/DSM は後から /ortho で再生成できる）。
+    if kind == "las":
+        if make_ortho:
+            try:
+                ortho_meta = _generate_ortho_from_las(meta)  # 内部で DSM も同時生成（点読込を共有）
+                meta = store.update_layer(layer_id, {"auto_ortho_id": ortho_meta["id"]}) or meta
+            except Exception as e:  # noqa: BLE001
+                meta["ortho_error"] = f"オルソ自動生成に失敗: {e}"
+        else:
+            _generate_las_dsm(meta)
     return meta

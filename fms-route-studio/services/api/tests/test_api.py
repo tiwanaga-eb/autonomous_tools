@@ -1153,3 +1153,42 @@ def test_las_epsg_patch_moves_ortho_and_costmap(tmp_path):
     assert r.status_code == 200 and client.get(f"/api/layers/{lid}").json().get("epsg") is None
     for i in (o1["id"], o2["id"], cm["id"], lid):
         client.delete(f"/api/layers/{i}")
+
+
+def test_plan_embeds_z_from_las_dsm_without_costmap(tmp_path):
+    """コストマップ未生成でも、LAS 取込時に自動生成される DSM から経路へ標高(Z)と勾配が乗る。
+
+    従来は DSM がコストマップ生成時にしか作られず、「LAS を読み込んでいるのに勾配が
+    表示されない・Z が埋め込めない」状態だった（ユーザー報告）。
+    """
+    p = tmp_path / "dsm_fallback.las"
+    _make_las(p)  # z = 0.1 * (x - 30000)
+    with open(p, "rb") as f:
+        body = client.post(
+            "/api/layers/las?make_ortho=false",
+            files={"file": (p.name, f, "application/octet-stream")},
+        ).json()
+    lid = body["id"]
+    assert client.get(f"/api/layers/{lid}").json().get("dsm_cog"), "取込時に DSM が生成される"
+
+    # コストマップ無しで経路生成 → z が埋め込まれる
+    r = client.post("/api/plan", json={
+        "waypoints": [
+            {"x": 30005.0, "y": 119020.0, "role": "start"},
+            {"x": 30045.0, "y": 119020.0, "role": "goal"},
+        ],
+        "spacing_m": 2.0,
+    })
+    assert r.status_code == 200, r.text
+    pts = r.json()["trajectory"]["points"]
+    zs = [q.get("z") for q in pts]
+    assert all(z is not None for z in zs), "全点に z が埋め込まれる"
+    mid = pts[len(pts) // 2]
+    assert abs(mid["z"] - 0.1 * (mid["x"] - 30000.0)) < 1.0  # 10%勾配の斜面と一致
+
+    # 標高の後付けサンプリングもコストマップ無しで動く
+    r2 = client.post("/api/elevation/sample", json={"points": [{"x": 30020.0, "y": 119020.0}]})
+    assert r2.status_code == 200
+    z0 = r2.json()["z"][0]
+    assert z0 is not None and abs(z0 - 2.0) < 1.0
+    client.delete(f"/api/layers/{lid}")

@@ -57,6 +57,52 @@ def _gray_to_u8(vals: np.ndarray, filled: np.ndarray) -> np.ndarray:
     return out
 
 
+def _fill_nan_neighbors(a: np.ndarray, passes: int) -> np.ndarray:
+    """NaN セルを非NaNの8近傍平均で埋める（最大 passes 回の膨張・ベクトル化）。
+
+    大きな空白域（サイト外周）は埋め残す＝過剰な外挿をしない。
+    """
+    h, w = a.shape
+    for _ in range(passes):
+        nanm = np.isnan(a)
+        if not nanm.any():
+            break
+        p = np.pad(a, 1, constant_values=np.nan)
+        stack = np.stack([p[1 + dr:1 + dr + h, 1 + dc:1 + dc + w]
+                          for dr in (-1, 0, 1) for dc in (-1, 0, 1) if not (dr == 0 and dc == 0)])
+        cnt = (~np.isnan(stack)).sum(axis=0)
+        with np.errstate(invalid="ignore"):
+            m = np.nanmean(stack, axis=0)
+        fill = nanm & (cnt >= 3)
+        if not fill.any():
+            break
+        a[fill] = m[fill]
+    return a
+
+
+def points_to_dsm(x: np.ndarray, y: np.ndarray, z: np.ndarray, *, res: float,
+                  fill_passes: int = 12) -> tuple[np.ndarray, Affine]:
+    """点群 → DSM（セル平均標高、float32、点なしセルは NaN）。
+
+    コストマップ未生成でも LAS から直接、経路の標高(Z)埋め込み・勾配解析を可能にする
+    （costmap 生成時の dsm.tif と同じ規約: north-up・nodata=NaN）。
+    小さな穴は近傍平均で埋める（経路がまたぐ際に NaN で勾配計算が落ちないように）。
+    """
+    if x.size == 0:
+        raise ValueError("no points")
+    res = float(res)
+    x0, x1 = float(x.min()), float(x.max())
+    y0, y1 = float(y.min()), float(y.max())
+    w = int((x1 - x0) / res) + 1
+    h = int((y1 - y0) / res) + 1
+    col = np.clip(((x - x0) / res).astype(np.int64), 0, w - 1)
+    row = np.clip(((y1 - y) / res).astype(np.int64), 0, h - 1)
+    mean, cnt = _mean_bin(np.asarray(z, np.float64), row * w + col, h * w)
+    out = np.where(cnt > 0, mean, np.nan).reshape(h, w).astype(np.float32)
+    _fill_nan_neighbors(out, fill_passes)
+    return out, Affine(res, 0.0, x0, 0.0, -res, y1)
+
+
 def points_to_ortho(x: np.ndarray, y: np.ndarray, z: np.ndarray,
                     rgb: np.ndarray | None, *, res: float) -> tuple[np.ndarray, Affine]:
     """点群をオルソ画像へグリッド化する。

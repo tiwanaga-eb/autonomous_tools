@@ -87,6 +87,23 @@ def _cost_layer_for(req_costmap_id: str | None, drivable_id: str | None) -> dict
     return None
 
 
+def _dsm_source(cl: dict | None) -> str | None:
+    """標高/勾配用 DSM のパスを解決する: cost レイヤの DSM > **最新 LAS の DSM**。
+
+    従来はコストマップ未生成だと勾配・Z 埋め込みが一切効かなかった（LAS を読み込んで
+    いるのに標高が出ない）。LAS 取込時に自動生成する dsm_cog（無ければこの場で生成）へ
+    フォールバックすることで、LAS だけでも /plan・/analyze・標高埋め込みが機能する。
+    """
+    if cl and cl.get("dsm_cog"):
+        return cl["dsm_cog"]
+    from .layers import ensure_las_dsm
+
+    las = [l for l in store.list_layers() if l.get("kind") == "las" and l.get("source")]
+    if not las:
+        return None
+    return ensure_las_dsm(las[-1])  # 最新の LAS
+
+
 def _r_min(req: PlanRequest, veh) -> float | None:
     if req.min_turn_radius_m and req.min_turn_radius_m > 0:
         return req.min_turn_radius_m
@@ -121,9 +138,10 @@ def plan(req: PlanRequest):
         obstacle = float(cl.get("obstacle_value", 1e9))
     if dl and "mask_cog" in dl:
         mask, mt = _rd(dl["mask_cog"])
-    if cl and cl.get("dsm_cog"):
+    dsm_path = _dsm_source(cl)
+    if dsm_path:
         try:
-            dsm, dsmt = _rd(cl["dsm_cog"])
+            dsm, dsmt = _rd(dsm_path)
         except Exception as e:  # noqa: BLE001 — DSM 読込失敗は勾配なしで続行し warning に出す
             dsm = dsmt = None
             dsm_warn = f"勾配/標高の計算に失敗（DSM読込失敗の可能性）: {e}"
@@ -177,9 +195,10 @@ def analyze(req: AnalyzeRequest):
     veh = _vehicle(req.vehicle_id)
     dsm = dsmt = None
     cl = _cost_layer_for(req.costmap_layer_id, None)
-    if cl and cl.get("dsm_cog"):
+    dsm_path = _dsm_source(cl)  # cost の DSM > 最新 LAS の DSM（LASだけでも勾配が出る）
+    if dsm_path:
         try:
-            dsm, dsmt = _read_raster(cl["dsm_cog"])
+            dsm, dsmt = _read_raster(dsm_path)
         except rasterio.errors.RasterioIOError:
             dsm = dsmt = None  # DSM 読込失敗は勾配なしで継続（想定外は伝播）
     traj, result, _safety, _clearance, _warn = analyze_polyline(pts, vehicle=veh, dsm=dsm, dsm_transform=dsmt)
@@ -207,10 +226,11 @@ def elevation_sample(req: ElevationSampleRequest):
     else:
         cands = [l for l in store.list_layers() if l.get("kind") == "cost" and l.get("dsm_cog")]
         cl = cands[-1] if cands else None
-    if not cl or not cl.get("dsm_cog"):
-        raise HTTPException(404, "点群由来の DSM を持つコストマップレイヤがありません（先に LAS からコストマップを生成してください）")
+    dsm_path = _dsm_source(cl)  # cost の DSM > 最新 LAS の DSM（コストマップ未生成でもZ埋め込み可）
+    if not dsm_path:
+        raise HTTPException(404, "点群由来の DSM がありません（LAS を読み込むか、コストマップを生成してください）")
     xy = np.array([[p.x, p.y] for p in req.points], float)
-    dsm, dsm_t = _read_raster(cl["dsm_cog"])
+    dsm, dsm_t = _read_raster(dsm_path)
     if len(xy) >= 2:
         s = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(xy[:, 0]), np.diff(xy[:, 1])))])
     else:
@@ -219,7 +239,7 @@ def elevation_sample(req: ElevationSampleRequest):
     zlist = [(float(v) if np.isfinite(v) else None) for v in z]
     return {
         "z": zlist,
-        "layer_id": cl.get("id"),
+        "layer_id": (cl or {}).get("id"),
         "n": len(zlist),
         "n_missing": sum(1 for v in zlist if v is None),
     }
