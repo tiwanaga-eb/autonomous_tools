@@ -338,7 +338,7 @@ def plan_route(spec: PlanSpec) -> PlanOutcome:  # noqa: C901 — アルゴリズ
             # Dubins の曲率ステップ（瞬間操舵）をクロソイド近似で連続化＝実車に則す。
             dub_rs = resample_by_spacing(dub, max((spec.spacing_m or 1.0) * 0.5, 0.5))
             curve, used_s, warn, measured_r, _ = fit_spline_curvature_limited(
-                dub_rs, r_min, kappa_rate_max=kappa_rate_max, n=spec.samples
+                dub_rs, r_min, kappa_rate_max=kappa_rate_max, n=spec.samples, max_dev_m=2.0
             )
             source = "numeric"
         else:
@@ -413,8 +413,11 @@ def plan_route(spec: PlanSpec) -> PlanOutcome:  # noqa: C901 — アルゴリズ
         if hs is not None or hg is not None:
             lead = max((r_min or 0) * 0.6, (spec.spacing_m or 2.0) * 1.5, 4.0)
             spts = _apply_endpoint_headings(pts, hs, hg, lead)
+        # 経由点からの逸脱を 3m に制限。旧実装は R_min を満たすまで平滑化 s を無制限に
+        # 上げたため（最大1e7）、Via を通らない大回りの経路になっていた。R_min の不足分は
+        # 下流の R_min 保証（limit_curvature_polyline）が違反コーナーのみ局所平滑化で解消する。
         curve, used_s, warn, measured_r, _ = fit_spline_curvature_limited(
-            spts, r_min, kappa_rate_max=kappa_rate_max, n=spec.samples
+            spts, r_min, kappa_rate_max=kappa_rate_max, n=spec.samples, max_dev_m=3.0
         )
         source = "numeric"
 
@@ -441,7 +444,7 @@ def plan_route(spec: PlanSpec) -> PlanOutcome:  # noqa: C901 — アルゴリズ
         # EB で曲率が増え得るため、R_min が分かれば曲率/操舵レート制限で仕上げる。
         if r_min and r_min > 0:
             curve, used_s, w2, measured_r, _ = fit_spline_curvature_limited(
-                curve, r_min, kappa_rate_max=kappa_rate_max, n=spec.samples
+                curve, r_min, kappa_rate_max=kappa_rate_max, n=spec.samples, max_dev_m=2.0
             )
             warn = w2 or warn
             source = "numeric"

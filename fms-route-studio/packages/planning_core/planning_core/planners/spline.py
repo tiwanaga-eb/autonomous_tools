@@ -110,6 +110,12 @@ def _spline_with_curvature(points_xy, s: float, n: int, w=None):
     return np.column_stack([x, y]), kappa, s_arc
 
 
+def _max_deviation(orig: np.ndarray, curve: np.ndarray) -> float:
+    """入力点 orig(K,2) それぞれから曲線 curve(n,2) への最短距離の最大値[m]。"""
+    d2 = ((orig[:, None, :] - curve[None, :, :]) ** 2).sum(axis=-1)
+    return float(np.sqrt(d2.min(axis=1)).max())
+
+
 def fit_spline_curvature_limited(
     points_xy,
     r_min: float | None,
@@ -117,14 +123,21 @@ def fit_spline_curvature_limited(
     n: int = 2000,
     s_max: float = 1e7,
     iters: int = 26,
+    max_dev_m: float | None = None,
 ):
     """平滑化 s を増やし R_min と dκ/ds 上限の両方を満たすスプラインを返す（クロソイド近似）。
 
     Dubins/格子A* の「最小半径アーク＋曲率ステップ（瞬間操舵）」を、連続曲率・操舵レート制限つきの
     実車に則した経路へ整える（設計書 §9.5 クロソイド平滑化）。
+
+    max_dev_m: **入力点からの最大逸脱の上限[m]**。平滑化 s は逸脱と引き換えに曲率を緩めるため、
+    無制限だと経由点(Via)から大きく離れた経路になる（ユーザー報告の不具合）。上限を超える s は
+    採用せず、その範囲で最も制約を満たす曲線を返す（満たせない R/dκ は warning。下流の
+    R_min 保証パス limit_curvature_polyline が違反コーナーだけ局所平滑化して仕上げる）。
     Returns (curve, used_s, warning, measured_min_radius, measured_max_kappa_rate)。
     """
     pts = np.asarray(points_xy, float)
+    orig = pts.copy()  # 逸脱判定は密化前の入力点（=ユーザーの経由点）に対して行う
     rmin = r_min if (r_min and r_min > 0) else 0.0
 
     # 疎な入力（数点）は平滑化の自由度が足りない → 密化してから当てる。
@@ -139,6 +152,11 @@ def fit_spline_curvature_limited(
     goal_pt = pts[-1].copy()
     w = np.ones(len(pts))
     w[0] = w[-1] = 50.0
+    # 経由点(orig)に最も近い密化点も重み付け → 平滑化しても Via 近傍を通りやすくする
+    if max_dev_m is not None and len(orig) > 2:
+        for p in orig[1:-1]:
+            k = int(np.argmin(((pts - p) ** 2).sum(axis=1)))
+            w[k] = max(w[k], 10.0)
 
     def _anchor(curve):
         # 端点を厳密に Start/Goal へスナップ（重み付けで残差は微小なのでキンクは出ない）。
@@ -148,7 +166,8 @@ def fit_spline_curvature_limited(
         return curve
 
     s = 0.0
-    best = None
+    best = None           # 逸脱制約なしでの最善（後方互換のフォールバック）
+    best_dev = None       # 逸脱制約を満たす中での最善（s最大=最も制約に近い）
     for _ in range(iters):
         curve, kappa, s_arc = _spline_with_curvature(pts, s, n, w=w)
         kmax = float(np.max(np.abs(kappa))) if len(kappa) else 0.0
@@ -159,14 +178,27 @@ def fit_spline_curvature_limited(
                 s_safe[i] = s_safe[i - 1] + 1e-9
         dk = np.gradient(kappa, s_safe)
         dkmax = float(np.max(np.abs(dk))) if len(dk) else 0.0
+        dev = _max_deviation(orig, curve) if max_dev_m is not None else 0.0
         ok_r = rmin <= 0 or rcur >= rmin
         ok_dk = kappa_rate_max is None or dkmax <= kappa_rate_max
-        if ok_r and ok_dk:
+        ok_dev = max_dev_m is None or dev <= max_dev_m
+        if ok_r and ok_dk and ok_dev:
             return _anchor(curve), s, None, rcur, dkmax
+        if max_dev_m is not None and ok_dev:
+            best_dev = (curve, s, rcur, dkmax, dev)
         best = (curve, s, rcur, dkmax)
+        if max_dev_m is not None and dev > max_dev_m:
+            break  # 逸脱は s とともに増える → これ以上 s を上げても Via から離れるだけ
         s = 1.0 if s == 0.0 else s * 3.0
         if s > s_max:
             break
+    if best_dev is not None:
+        curve, s_used, rcur, dkmax, dev = best_dev
+        warn = (
+            f"経由点からの逸脱 ≤{max_dev_m:g}m の範囲では R>={rmin:.1f}m / dκ/ds 制約を"
+            f"完全には満たせません（R={rcur:.1f}m, 逸脱={dev:.2f}m）。違反コーナーは局所平滑化で仕上げます。"
+        )
+        return _anchor(curve), float(s_used), warn, float(rcur), float(dkmax)
     if best is None:
         # 候補が1つも得られなかった（iters<=0 等の異常入力）。None のアンパックによる
         # 不可解な TypeError を避け、呼び出し側が扱える明示的なエラーにする。
